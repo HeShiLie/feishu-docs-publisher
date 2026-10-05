@@ -77,7 +77,7 @@ async function run() {
 		await testWikiUrlReusesCanonicalImageState(workspace);
 		await testStateWritePreservesExternalDocuments(workspace);
 		await testStateCacheTrim(workspace);
-		await testSameDocumentAliasesRunSerially(workspace);
+		await testSharedDocumentAliasesAreRejected(workspace);
 		await testConcurrentFailureWaitsForStartedTasks(workspace);
 		await testMissingLarkCliFailsWithInstallPrompt(workspace);
 		await testUnsupportedLarkCliVersionFailsEarly(workspace);
@@ -761,7 +761,7 @@ async function testStateCacheTrim(workspace) {
 	assert.ok(state.documents["doc-token"]);
 }
 
-async function testSameDocumentAliasesRunSerially(workspace) {
+async function testSharedDocumentAliasesAreRejected(workspace) {
 	await resetWorkspaceFiles(workspace);
 	await writeFile(join(workspace, "bound.md"), boundMarkdownWithToken(
 		"doc-token",
@@ -777,15 +777,16 @@ async function testSameDocumentAliasesRunSerially(workspace) {
 	await writeSyncStateRaw(workspace, { version: 1, documents: {} });
 	await clearLog(workspace);
 	const result = await runHook(workspace, {
+		reject: false,
 		env: {
 			LARK_CLI_LOCK_DIR: workspace,
 			LARK_CLI_RETURN_DOC_TOKEN_FOR_URL: "1"
 		}
 	});
-	assert.equal(result.exitCode, 0);
+	assert.equal(result.exitCode, 1);
+	assert.match(result.stderr, /shared by local files.*bound.md.*same-doc.md/);
 	const log = await readLog(workspace);
-	assert.equal((log.match(/docs \+update/g) || []).length, 2);
-	assert.match(log, /--doc doc-token|--doc https:\/\/example\.feishu\.cn\/docx\/doc-token/);
+	assert.doesNotMatch(log, /docs \+update/);
 }
 
 async function testConcurrentFailureWaitsForStartedTasks(workspace) {

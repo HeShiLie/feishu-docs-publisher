@@ -293,6 +293,7 @@ interface IndexedFolderPreparedFile {
 interface RemoteParent {
 	token: string;
 	kind: RemoteParentKind;
+	spaceId?: string;
 }
 
 interface RemoteFolderPathResolution {
@@ -385,6 +386,8 @@ const MESSAGES = {
 		commandSyncCurrentNote: "同步到飞书",
 		commandOverwriteCurrentNote: "覆盖同步到飞书",
 		menuSyncToLark: "Lark: 同步到飞书",
+		menuOverwriteSyncToLark: "Lark: 覆盖同步到飞书",
+		noticeRemovedDuplicates: "已清理 {count} 个远端同名文档。",
 		ribbonSyncCurrentNote: "同步到飞书",
 		noticeNoActiveMarkdownNote: "当前没有打开 Markdown 笔记。",
 		noticeSyncingToLark: "正在同步到飞书...",
@@ -460,6 +463,8 @@ const MESSAGES = {
 		commandSyncCurrentNote: "Sync to Feishu/Lark",
 		commandOverwriteCurrentNote: "Overwrite sync to Feishu/Lark",
 		menuSyncToLark: "Lark: Sync to Feishu/Lark",
+		menuOverwriteSyncToLark: "Lark: Overwrite sync to Feishu/Lark",
+		noticeRemovedDuplicates: "Removed {count} remote documents with duplicate names.",
 		ribbonSyncCurrentNote: "Sync to Feishu/Lark",
 		noticeNoActiveMarkdownNote: "No active Markdown note.",
 		noticeSyncingToLark: "Syncing to Lark...",
@@ -616,6 +621,8 @@ export default class LarkCliSyncPlugin extends Plugin {
 				kind = "folder";
 				menu.addItem((item) => item.setTitle(this.t("menuSyncToLark")).setIcon("folder-up")
 					.onClick(() => { void this.publishFolder(file.path); }));
+				menu.addItem((item) => item.setTitle(this.t("menuOverwriteSyncToLark")).setIcon("replace")
+					.onClick(() => { void this.publishFolder(file.path, true); }));
 			} else if (file instanceof TFile && file.extension.toLowerCase() === "md") {
 				kind = "markdown";
 				menu.addItem((item) => {
@@ -623,10 +630,14 @@ export default class LarkCliSyncPlugin extends Plugin {
 						void this.syncFile(file);
 					});
 				});
+				menu.addItem((item) => item.setTitle(this.t("menuOverwriteSyncToLark")).setIcon("replace")
+					.onClick(() => { void this.overwriteSyncFile(file); }));
 			} else if (file instanceof TFile && file.extension.toLowerCase() === "pdf") {
 				kind = "pdf";
 				menu.addItem((item) => item.setTitle(this.t("menuSyncToLark")).setIcon("upload")
 					.onClick(() => { void this.runWithNotice(this.t("noticeSyncingToLark"), () => this.syncPdfFile(file)); }));
+				menu.addItem((item) => item.setTitle(this.t("menuOverwriteSyncToLark")).setIcon("replace")
+					.onClick(() => { void this.runWithNotice(this.t("noticeOverwriteSyncingToLark"), () => this.syncPdfFile(file, true)); }));
 			} else {
 				return;
 			}
@@ -792,7 +803,9 @@ export default class LarkCliSyncPlugin extends Plugin {
 
 	private async syncFileUnlocked(file: TFile, options: SyncFileOptions): Promise<BoundLarkDocument | null> {
 		if (this.hasUnsavedSettings) await this.saveSettingsWithoutClearingCommandCache();
+		if (options.strategy === "overwrite") return await this.overwriteFileUnlocked(file, options);
 		const binding = this.getBinding(file);
+		if (binding) this.assertRemoteBindingExclusive(file.path, binding);
 		if (!binding) {
 			if (!options.allowCreate) {
 				return null;
@@ -871,6 +884,233 @@ export default class LarkCliSyncPlugin extends Plugin {
 		}
 
 		return nextBinding;
+	}
+
+	private async overwriteFileUnlocked(file: TFile, options: SyncFileOptions): Promise<BoundLarkDocument | null> {
+		let binding = this.getBinding(file);
+		if (binding) this.assertRemoteBindingExclusive(file.path, binding);
+		if (!binding && !options.allowCreate) return null;
+		const raw = await this.readNoteForLark(file);
+		const prepared = { ...raw, content: this.rewritePublishedFolderInternalLinks(file, raw.content) };
+		await this.assertUniqueOverwriteTitle(file, prepared.content);
+		const published = await this.resolvePublishedFolderParentForFile(file);
+		const parent = published?.parent || await this.resolveOverwriteParent(binding);
+		const title = extractTitle(file, prepared.content, "first-heading");
+		if (!binding) {
+			const matches = (await this.listRemoteDocuments(parent)).filter((document) => document.title === title);
+			binding = this.selectOverwriteMatch(file.path, matches) || null;
+			if (binding) await this.rememberDocumentBinding(file, { ...binding, containerToken: parent.token, containerKind: parent.kind });
+		}
+		let next: BoundLarkDocument;
+		if (binding) {
+			next = await this.syncOrRecreateDocument(file, binding, prepared, parent, {
+				allowRecreate: options.allowCreate, showRemoteDeletedNotice: options.showRemoteDeletedNotice,
+				updateFrontmatter: options.updateFrontmatter, mode: options.mode, path: file.path,
+				strategy: "overwrite", stateKeys: this.getBindingAliases(binding)
+			});
+		} else {
+			next = await this.createLarkDocument(file, prepared, parent);
+			await this.saveCreatedDocumentStateFromBaseline(next, prepared.content);
+		}
+		next = published ? this.withRemoteParentMetadata(next, published.remoteRoot, published.remoteParentPath, parent)
+			: { ...next, containerToken: parent.token, containerKind: parent.kind };
+		// Keep the chosen target durable before deleting anything, even with frontmatter off.
+		await this.writeBinding(file, next);
+		const removed = await this.cleanupRemoteDuplicates(file.path, title, parent, next);
+		await this.restoreOverwriteChildPageList(next, file.path, parent);
+		if (options.showSuccess) {
+			this.showSuccess(this.t(options.successMessageKey || "noticeOverwriteSyncedToLark"), next.url);
+			if (removed) new Notice(this.t("noticeRemovedDuplicates", { count: String(removed) }), 8000);
+		}
+		if (options.openAfterSync) this.openUrlIfNeeded(next.url);
+		return next;
+	}
+
+	private async resolveOverwriteParent(binding: BoundLarkDocument | null): Promise<RemoteParent> {
+		if (binding?.containerKind && binding.containerKind !== "unknown" && binding.containerToken !== undefined) {
+			return { kind: binding.containerKind, token: binding.containerToken };
+		}
+		if (binding) {
+			const inspected = await this.runLarkCli(["drive", "+inspect", "--as", "user", "--url", binding.url || binding.token,
+				...(!binding.url ? ["--type", "docx"] : []), "--json"]);
+			const wiki = inspected.data?.wiki_node;
+			if (wiki?.node_token) {
+				const result = await this.runLarkCli(["wiki", "+node-get", "--as", "user", "--node-token", wiki.node_token, "--json"]);
+				const node = result.data?.node || result.data;
+				if (node?.parent_node_token !== undefined && node.space_id) {
+					binding.nodeToken = wiki.node_token;
+					return { kind: "wiki", token: node.parent_node_token, spaceId: node.space_id };
+				}
+			}
+		}
+		const parent = await this.resolveRemoteRootParent();
+		if (parent.kind === "unknown") throw new LocalizedSyncError(this.settings.language === "en"
+			? "Use a Wiki or Drive folder URL as the upload target before overwrite sync."
+			: "覆盖同步前，请将上传位置设置为 Wiki 或云盘文件夹链接。");
+		return parent;
+	}
+
+	private async assertUniqueOverwriteTitle(file: TFile, content: string): Promise<void> {
+		const title = extractTitle(file, content, "first-heading");
+		for (const sibling of this.app.vault.getMarkdownFiles()) {
+			if (sibling.path === file.path || this.parentPath(sibling.path) !== this.parentPath(file.path)) continue;
+			const prepared = await this.readNoteForLark(sibling);
+			if (extractTitle(sibling, prepared.content, "first-heading") === title) throw new LocalizedSyncError(this.settings.language === "en"
+				? `Local notes have the same document title: ${file.path} and ${sibling.path}. Give them distinct titles before overwrite sync.`
+				: `本地笔记的文档标题相同：${file.path} 和 ${sibling.path}。请先使用不同标题，再覆盖同步。`);
+		}
+		for (const sibling of this.app.vault.getAllLoadedFiles?.() || []) {
+			if (sibling instanceof TFolder && this.parentPath(sibling.path) === this.parentPath(file.path) && sibling.name === title) {
+				throw new LocalizedSyncError(this.settings.language === "en"
+					? `The note title conflicts with a sibling folder: ${file.path} and ${sibling.path}. Use a distinct title before overwrite sync.`
+					: `笔记标题与同级目录同名：${file.path} 和 ${sibling.path}。请先使用不同标题，再覆盖同步。`);
+			}
+		}
+	}
+
+	private getOtherRemoteBindingOwners(path: string): Map<string, string> {
+		const owners = new Map<string, string>();
+		const add = (owner: string, binding: BoundLarkDocument): void => {
+			if (!binding?.token && !binding?.url && !binding?.nodeToken) return;
+			if (owner !== path) for (const key of this.getBindingAliases(binding)) owners.set(key, owner);
+		};
+		for (const [owner, binding] of Object.entries(this.settings.documentBindings || {})) add(owner, binding);
+		for (const file of this.app?.vault?.getMarkdownFiles?.() || []) {
+			const binding = this.getBinding(file);
+			if (binding) add(file.path, binding);
+		}
+		for (const [owner, binding] of Object.entries(this.settings.pdfBindings || {})) {
+			if (binding.fileToken) add(owner, { token: binding.fileToken, nodeToken: binding.nodeToken, url: binding.url || "" });
+		}
+		for (const [owner, published] of Object.entries(this.settings.publishedFolders || {})) {
+			for (const [key, binding] of Object.entries(this.settings.folderBindings || {})) {
+				const root = this.getFolderBindingRootParent(key), remotePath = this.getFolderBindingPath(key);
+				if (root.kind === published.rootParent.kind && root.token === published.rootParent.token && this.isPathWithin(remotePath, published.remoteRoot)) {
+					const suffix = remotePath.slice(published.remoteRoot.length).replace(/^\/+/, "");
+					add([owner, suffix].filter(Boolean).join("/"), binding);
+				}
+			}
+		}
+		return owners;
+	}
+
+	private assertRemoteBindingExclusive(path: string, binding: BoundLarkDocument): void {
+		const owners = this.getOtherRemoteBindingOwners(path);
+		for (const key of this.getBindingAliases(binding)) {
+			const owner = owners.get(key);
+			if (owner) throw new LocalizedSyncError(this.settings.language === "en"
+				? `This remote document is already bound to ${owner}; ${path} cannot share it. Set a different link first.`
+				: `此远端文档已绑定本地文件“${owner}”，不能再绑定“${path}”。请先设置不同的飞书链接。`);
+		}
+	}
+
+	private async resolveExclusiveRemoteBinding(path: string, binding: BoundLarkDocument): Promise<BoundLarkDocument> {
+		this.assertRemoteBindingExclusive(path, binding);
+		const known = [...Object.values(this.settings.documentBindings),
+			...(this.app?.vault?.getMarkdownFiles?.() || []).map((file) => this.getBinding(file)).filter((value): value is BoundLarkDocument => Boolean(value))];
+		if (!binding.nodeToken && (binding.url.includes("/wiki/") || known.some((value) => !value.nodeToken && value.url.includes("/wiki/")))) {
+			const inspected = await this.runLarkCli(["drive", "+inspect", "--as", "user", "--url", binding.url || binding.token,
+				...(!binding.url ? ["--type", "docx"] : []), "--json"]);
+			if (inspected.data?.type !== "docx" || !inspected.data.token) throw new Error(this.t("invalidPublishedLink"));
+			const resolved = { ...binding, token: inspected.data.token, nodeToken: inspected.data.wiki_node?.node_token || binding.nodeToken };
+			this.assertRemoteBindingExclusive(path, resolved);
+			return resolved;
+		}
+		return binding;
+	}
+
+	private selectOverwriteMatch(path: string, matches: Array<BoundLarkDocument & { title: string }>): BoundLarkDocument | undefined {
+		for (const match of matches) this.assertRemoteBindingExclusive(path, match);
+		return [...matches].sort((left, right) => (left.nodeToken || left.token).localeCompare(right.nodeToken || right.token))[0];
+	}
+
+	private sameRemoteDocument(left: BoundLarkDocument, right: BoundLarkDocument): boolean {
+		const rightNode = right.nodeToken || (right.url.includes("/wiki/") ? extractDocumentToken(right.url) : "");
+		if (left.nodeToken && rightNode) return left.nodeToken === rightNode;
+		const aliases = new Set(this.getBindingAliases(right));
+		return this.getBindingAliases(left).some((key) => aliases.has(key));
+	}
+
+	private async cleanupRemoteDuplicates(path: string, title: string, parent: RemoteParent, keep: BoundLarkDocument, objType: "docx" | "file" = "docx"): Promise<number> {
+		const matches = (await this.listRemoteDocuments(parent, objType)).filter((document) => document.title === title);
+		const kept = matches.find((document) => this.sameRemoteDocument(document, keep));
+		if (matches.length < 2) return 0;
+		if (!kept) throw new LocalizedSyncError(this.settings.language === "en"
+			? `The bound document is not in the expected remote folder: ${path}. No duplicates were deleted.`
+			: `无法在对应远端目录确认保留文档：${path}。尚未删除同名文档。`);
+		// Multiple Wiki nodes may reference the same underlying document; deleting
+		// its origin would also invalidate the retained reference.
+		const duplicates = matches.filter((document) => document !== kept && document.token !== kept.token);
+		if (!duplicates.length) return 0;
+		for (const duplicate of duplicates) this.assertRemoteBindingExclusive(path, duplicate);
+		for (const duplicate of duplicates) {
+			if (parent.kind === "wiki" || parent.kind === "my_library") {
+				await this.removeWikiDuplicate(parent, duplicate, kept, objType);
+			} else if (parent.kind === "drive") {
+				const current = await this.listRemoteDocuments(parent, objType);
+				if (!current.some((document) => document.title === title && this.sameRemoteDocument(document, duplicate))
+					|| !current.some((document) => this.sameRemoteDocument(document, kept))) {
+					throw new LocalizedSyncError(this.settings.language === "en" ? "Remote documents changed; deletion stopped." : "远端文档已变化，已停止删除。");
+				}
+				await this.runLarkCli(["drive", "+delete", "--as", "user", "--file-token", duplicate.token, "--type", objType, "--yes", "--json"]);
+			} else throw new LocalizedSyncError(this.t("invalidPublishedLink"));
+			if (duplicate.token !== kept.token) this.removeSyncStateForBinding(duplicate);
+		}
+		for (let attempt = 0; attempt < STRICT_REMOTE_STATE_REFRESH_ATTEMPTS; attempt++) {
+			const remaining = await this.listRemoteDocuments(parent, objType);
+			if (duplicates.every((duplicate) => !remaining.some((document) => this.sameRemoteDocument(document, duplicate)))) {
+				await this.saveLarkSyncState();
+				return duplicates.length;
+			}
+			if (attempt < STRICT_REMOTE_STATE_REFRESH_ATTEMPTS - 1) await this.sleep(STRICT_REMOTE_STATE_REFRESH_DELAY_MS);
+		}
+		throw new LocalizedSyncError(this.settings.language === "en"
+			? `Duplicate deletion is not confirmed yet: ${path}. Retry overwrite sync later.`
+			: `尚未确认同名文档已删除：${path}。请稍后重试覆盖同步。`);
+	}
+
+	private async removeWikiDuplicate(parent: RemoteParent, duplicate: BoundLarkDocument & { title: string }, keep: BoundLarkDocument, objType: "docx" | "file" = "docx"): Promise<void> {
+		const info = await this.runLarkCli(["wiki", "+node-get", "--as", "user", "--node-token", duplicate.nodeToken || duplicate.token, "--json"]);
+		const node: LarkCommandNode | undefined = info.data?.node || info.data;
+		if (!node?.node_token || node.obj_token !== duplicate.token || node.obj_type !== objType
+			|| node.title !== duplicate.title || node.parent_node_token !== parent.token) {
+			throw new LocalizedSyncError(this.settings.language === "en" ? "The duplicate document moved or changed; deletion stopped." : "同名文档的位置或标题已变化，已停止删除。");
+		}
+		const target = keep.nodeToken || keep.token;
+		const childParent: RemoteParent = { kind: "wiki", token: node.node_token, spaceId: node.space_id };
+		const children = await this.listRemoteWikiNodes(childParent);
+		for (const child of children) {
+			if (!child.node_token) throw new Error("Invalid wiki child node; duplicate deletion stopped.");
+			await this.runLarkCli(["wiki", "+move", "--as", "user", "--node-token", child.node_token, "--target-parent-token", target, "--json"]);
+		}
+		// Never cascade-delete child pages; they must remain under the retained document.
+		if ((await this.listRemoteWikiNodes(childParent)).length) throw new LocalizedSyncError(this.settings.language === "en"
+			? "Child pages have not finished moving; duplicate deletion stopped." : "子页面尚未全部移动到保留文档，已停止删除。");
+		for (const binding of Object.values(this.settings.documentBindings)) {
+			if (binding.containerToken === node.node_token) binding.containerToken = target;
+		}
+		for (const binding of Object.values(this.settings.folderBindings)) {
+			if (binding.containerToken === node.node_token) binding.containerToken = target;
+		}
+		for (const binding of Object.values(this.settings.pdfBindings)) {
+			if (binding.parent?.kind === "wiki" && binding.parent.token === node.node_token) {
+				binding.parent.token = target;
+				binding.key = createPdfBindingKey({ vaultRoot: this.getVaultRoot(), vaultPath: binding.vaultPath, parent: binding.parent, scope: binding.scope });
+			}
+		}
+		await this.saveSettingsWithoutClearingCommandCache();
+		await this.runLarkCli(["wiki", "+node-delete", "--as", "user", "--node-token", node.node_token,
+			"--obj-type", "wiki", "--include-children=false", "--yes", "--json"]);
+	}
+
+	private async restoreOverwriteChildPageList(binding: BoundLarkDocument, path: string, parent: RemoteParent): Promise<void> {
+		if (parent.kind !== "wiki" && parent.kind !== "my_library") return;
+		const info = await this.runLarkCli(["wiki", "+node-get", "--as", "user", "--node-token", binding.nodeToken || binding.token, "--json"]);
+		const node: LarkCommandNode | undefined = info.data?.node || info.data;
+		if (!node?.node_token || !node.space_id) throw new Error("Cannot resolve overwritten document's wiki node.");
+		if ((await this.listRemoteWikiNodes({ kind: "wiki", token: node.node_token, spaceId: node.space_id })).length) {
+			await this.ensureFolderPageList(binding, path);
+		}
 	}
 
 	private queueSaveAutoSync(file: TFile): void {
@@ -1380,11 +1620,12 @@ exec "${nodePath}" "${scriptPath}" "$@"
 		}
 	}
 
-	private async publishFolder(folderPath: string): Promise<void> {
-		await this.runWithNotice(this.t("noticePublishingFolderToLark"), () => this.publishFolderInternal(folderPath));
+	private async publishFolder(folderPath: string, overwrite = false): Promise<void> {
+		await this.runWithNotice(this.t(overwrite ? "noticeOverwriteSyncingToLark" : "noticePublishingFolderToLark"),
+			() => this.publishFolderInternal(folderPath, overwrite));
 	}
 
-	private async publishFolderInternal(folderPath: string): Promise<void> {
+	private async publishFolderInternal(folderPath: string, overwrite = false): Promise<void> {
 		await (this.operationQueue ??= new SyncQueue()).run(() => this.withDeferredLarkSyncStateSave(async () => {
 			if (this.hasUnsavedSettings) await this.saveSettingsWithoutClearingCommandCache();
 			delete this.settings.disconnectedFolders?.[folderPath];
@@ -1414,8 +1655,19 @@ exec "${nodePath}" "${scriptPath}" "$@"
 					remoteParentPath: documentParentPath
 				};
 			}));
+			for (const prepared of preparedFiles) {
+				if (prepared.binding) this.assertRemoteBindingExclusive(prepared.file.path, prepared.binding);
+			}
 			const parentsByPath = await this.resolveFolderParents(rootParent, preparedFiles);
-			await this.recoverPreparedBindings(preparedFiles, parentsByPath, true);
+			let removed = 0;
+			if (overwrite) {
+				for (const prepared of preparedFiles) {
+					await this.assertUniqueOverwriteTitle(prepared.file, prepared.preparedContent.content);
+				}
+				for (const pdf of pdfFiles) await this.ensureRemoteFolderPath(rootParent, this.getRemoteParentPath(folderPath, pdf, folderRoot));
+				removed += await this.consolidateOverwriteFolderPages(folderPath, folderRoot, rootParent);
+			}
+			await this.recoverPreparedBindings(preparedFiles, parentsByPath, true, undefined, overwrite);
 			const indexedPreparedFiles = preparedFiles.map((preparedFile, index) => {
 				return {
 					preparedFile,
@@ -1433,18 +1685,50 @@ exec "${nodePath}" "${scriptPath}" "$@"
 			for (const file of pdfFiles) {
 				const remotePath = this.getRemoteParentPath(folderPath, file, folderRoot);
 				const { parent } = await this.ensureRemoteFolderPath(rootParent, remotePath);
-				await this.syncPdfFileUnlocked(file, parent);
+				await this.syncPdfFileUnlocked(file, parent, overwrite);
 			}
-			await this.syncFolderEntries(folderPath, folderRoot, entries);
-			await this.syncFolderPageLists(folderPath, folderRoot, rootParent);
+			await this.syncFolderEntries(folderPath, folderRoot, entries, overwrite);
+			if (overwrite) {
+				for (const entry of entries) {
+					if (entry.binding) {
+						removed += await this.cleanupRemoteDuplicates(entry.file.path,
+							extractTitle(entry.file, entry.preparedContent.content, "first-heading"), entry.parent, entry.binding);
+						await this.restoreOverwriteChildPageList(entry.binding, entry.file.path, entry.parent);
+					}
+				}
+			}
+			await this.syncFolderPageLists(folderPath, folderRoot, rootParent, overwrite);
 			this.savePublishedFolderBinding(folderPath, rootParent, folderRoot);
 			await this.saveSettings();
 
 			new Notice(this.t("noticePublishedFolderToLark", { count: String(entries.length + pdfFiles.length) }), 8000);
+			if (removed) new Notice(this.t("noticeRemovedDuplicates", { count: String(removed) }), 8000);
 		}));
 	}
 
-	private async syncFolderPageLists(folderPath: string, folderRoot: string, rootParent: RemoteParent): Promise<void> {
+	private async consolidateOverwriteFolderPages(folderPath: string, folderRoot: string, rootParent: RemoteParent): Promise<number> {
+		const root = this.normalizeLinkPath(folderRoot);
+		let removed = 0;
+		const bindings = Object.entries(this.settings.folderBindings).sort(([left], [right]) => {
+			return this.countPathSegments(this.getFolderBindingPath(left)) - this.countPathSegments(this.getFolderBindingPath(right));
+		});
+		for (const [key, binding] of bindings) {
+			const boundRoot = this.getFolderBindingRootParent(key), remotePath = this.getFolderBindingPath(key);
+			if (boundRoot.kind !== rootParent.kind || boundRoot.token !== rootParent.token || !remotePath || !this.isPathWithin(remotePath, root)) continue;
+			const kind = binding.containerKind || rootParent.kind;
+			if (kind !== "wiki" && kind !== "my_library") continue;
+			const suffix = remotePath.slice(root.length).replace(/^\/+/, "");
+			const localPath = [folderPath, suffix].filter(Boolean).join("/");
+			if (this.isFolderDisconnected(localPath)) continue;
+			this.assertRemoteBindingExclusive(localPath, binding);
+			const parentBinding = this.settings.folderBindings[this.getFolderBindingKey(rootParent, this.parentPath(remotePath))];
+			const parent = { kind, token: binding.containerToken ?? parentBinding?.token ?? rootParent.token };
+			removed += await this.cleanupRemoteDuplicates(localPath, remotePath.split("/").pop() || "Untitled", parent, binding);
+		}
+		return removed;
+	}
+
+	private async syncFolderPageLists(folderPath: string, folderRoot: string, rootParent: RemoteParent, overwrite = false): Promise<void> {
 		const remoteRoot = this.normalizeLinkPath(folderRoot);
 		for (const [key, binding] of Object.entries(this.settings.folderBindings)) {
 			const boundRoot = this.getFolderBindingRootParent(key);
@@ -1456,17 +1740,19 @@ exec "${nodePath}" "${scriptPath}" "$@"
 			if (this.isFolderDisconnected(localPath)) continue;
 			const kind = binding.containerKind || rootParent.kind;
 			if (kind !== "wiki" && kind !== "my_library" && !binding.url.includes("/wiki/")) continue;
-			await this.ensureFolderPageList(binding, localPath);
+			await this.ensureFolderPageList(binding, localPath, overwrite);
 		}
 	}
 
-	private async ensureFolderPageList(binding: BoundLarkDocument, path: string): Promise<void> {
+	private async ensureFolderPageList(binding: BoundLarkDocument, path: string, overwrite = false): Promise<void> {
 		const doc = binding.url || binding.token;
 		const snapshot = await this.fetchLarkDocumentWithIds(doc);
-		if (/<sub-page-list\b/i.test(snapshot.content)) return;
+		if (!overwrite && /<sub-page-list\b/i.test(snapshot.content)) return;
+		const title = (path.split("/").pop() || "Untitled").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 		const args = ["docs", "+update", "--api-version", "v2", "--as", "user",
-			"--doc", snapshot.doc || doc, "--command", "block_insert_after", "--block-id", DOCUMENT_END_BLOCK_ID,
-			"--doc-format", "xml", "--content", "<sub-page-list/>"];
+			"--doc", snapshot.doc || doc, "--command", overwrite ? "overwrite" : "block_insert_after",
+			...(!overwrite ? ["--block-id", DOCUMENT_END_BLOCK_ID] : []),
+			"--doc-format", "xml", "--content", overwrite ? `<title>${title}</title><sub-page-list/>` : "<sub-page-list/>"];
 		if (snapshot.revisionId !== undefined) args.push("--revision-id", String(snapshot.revisionId));
 		args.push("--json");
 		const result = await this.runLarkCli(args);
@@ -1569,11 +1855,11 @@ exec "${nodePath}" "${scriptPath}" "$@"
 		}
 	}
 
-	private async syncFolderEntries(folderPath: string, folderRoot: string, entries: FolderPublishEntry[]): Promise<void> {
+	private async syncFolderEntries(folderPath: string, folderRoot: string, entries: FolderPublishEntry[], overwrite = false): Promise<void> {
 		const maxAttempts = entries.length + 1;
 		for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
 			const linkMap = this.buildFolderLinkMap(folderPath, entries);
-			const bindingChanged = await this.syncFolderEntriesOnce(folderRoot, entries, linkMap);
+			const bindingChanged = await this.syncFolderEntriesOnce(folderRoot, entries, linkMap, overwrite);
 			if (!bindingChanged) {
 				return;
 			}
@@ -1598,12 +1884,13 @@ exec "${nodePath}" "${scriptPath}" "$@"
 	private async syncFolderEntriesOnce(
 		folderRoot: string,
 		entries: FolderPublishEntry[],
-		linkMap: Map<string, LinkTarget>
+		linkMap: Map<string, LinkTarget>,
+		overwrite = false
 	): Promise<boolean> {
 		const entryGroups = this.groupFolderEntriesByDocument(entries);
 		let hasBindingChanged = false;
 		await this.runWithConcurrency(entryGroups, FOLDER_SYNC_PARALLEL_LIMIT, async (entryGroup) => {
-			const groupBindingChanged = await this.syncFolderEntryGroupOnce(folderRoot, entryGroup, linkMap);
+			const groupBindingChanged = await this.syncFolderEntryGroupOnce(folderRoot, entryGroup, linkMap, overwrite);
 			hasBindingChanged = hasBindingChanged || groupBindingChanged;
 		});
 
@@ -1629,7 +1916,8 @@ exec "${nodePath}" "${scriptPath}" "$@"
 	private async syncFolderEntryGroupOnce(
 		folderRoot: string,
 		entries: FolderPublishEntry[],
-		linkMap: Map<string, LinkTarget>
+		linkMap: Map<string, LinkTarget>,
+		overwrite = false
 	): Promise<boolean> {
 		for (const entry of entries) {
 			if (!entry.binding) {
@@ -1643,7 +1931,7 @@ exec "${nodePath}" "${scriptPath}" "$@"
 					continue;
 				}
 			}
-			const strategy = entry.isNewDocument ? "precise" : undefined;
+			const strategy = overwrite ? "overwrite" : entry.isNewDocument ? "precise" : undefined;
 
 			const nextBinding = await this.syncOrRecreateDocument(entry.file, entry.binding, {
 				...entry.preparedContent,
@@ -1816,7 +2104,8 @@ exec "${nodePath}" "${scriptPath}" "$@"
 
 			const binding = {
 				token,
-				url
+				url,
+				...(result.data?.wiki_node?.node_token ? { nodeToken: result.data.wiki_node.node_token } : {})
 			};
 			// Persist immediately: later content/image/state failures must reuse this document.
 			await this.rememberDocumentBinding(file, this.withRemoteParentMetadata(
@@ -2798,6 +3087,7 @@ exec "${nodePath}" "${scriptPath}" "$@"
 		parent: RemoteParent | undefined,
 		options: SyncOrRecreateOptions
 	): Promise<BoundLarkDocument> {
+		binding = await this.resolveExclusiveRemoteBinding(file.path, binding);
 		try {
 			const result = await this.updateLarkDocument(binding.token || binding.url, preparedContent, {
 				mode: options.mode,
@@ -2913,6 +3203,7 @@ exec "${nodePath}" "${scriptPath}" "$@"
 	private getBindingAliases(binding: BoundLarkDocument): string[] {
 		return uniquePathEntries([
 			binding.token,
+			binding.nodeToken || "",
 			binding.url,
 			binding.url ? extractDocumentToken(binding.url) : ""
 		]);
@@ -3356,7 +3647,7 @@ exec "${nodePath}" "${scriptPath}" "$@"
 				return await this.runLarkCliOnce(args, options);
 			} catch (error) {
 				// An upload may already have committed; retry only after reconciling its token.
-				if (["+upload", "+create", "+node-create", "+create-folder"].includes(args[1] || "")
+				if (["+upload", "+create", "+node-create", "+create-folder", "+delete", "+node-delete"].includes(args[1] || "")
 					|| !this.isLarkRateLimitError(error) || attempt >= LARK_CLI_RATE_LIMIT_RETRY_DELAYS_MS.length) {
 					throw error;
 				}
@@ -3863,6 +4154,7 @@ exec "${nodePath}" "${scriptPath}" "$@"
 	}
 
 	private async rememberDocumentBinding(file: TFile, binding: BoundLarkDocument): Promise<void> {
+		this.assertRemoteBindingExclusive(file.path, binding);
 		delete this.settings.disconnectedBindings?.[file.path];
 		delete this.settings.pendingDocumentCreates?.[file.path];
 		(this.settings.documentBindings ??= {})[file.path] = { ...binding };
@@ -3870,6 +4162,7 @@ exec "${nodePath}" "${scriptPath}" "$@"
 	}
 
 	private async writeBinding(file: TFile, binding: BoundLarkDocument): Promise<void> {
+		this.assertRemoteBindingExclusive(file.path, binding);
 		const previousBinding = this.getBinding(file);
 		if (previousBinding && this.hasBindingChanged(previousBinding, binding)) {
 			this.removeSyncStateForBinding(previousBinding);
@@ -4049,6 +4342,7 @@ exec "${nodePath}" "${scriptPath}" "$@"
 		const result = await this.runLarkCli(["drive", "+inspect", "--as", "user", "--url", url, "--json"]);
 		const data = result.data;
 		if (!data?.token) throw new Error(this.t("errorNoDocumentToken"));
+		this.assertRemoteBindingExclusive(entry.path, { token: data.token, nodeToken: data.wiki_node?.node_token, url });
 		if (entry.kind === "folder") {
 			const wiki = data.wiki_node;
 			if (data.type !== "folder" && !wiki?.node_token) throw new Error(this.t("invalidPublishedLink"));
@@ -4066,7 +4360,7 @@ exec "${nodePath}" "${scriptPath}" "$@"
 			if (data.type !== "docx") throw new Error(this.t("invalidPublishedLink"));
 			const previous = this.getBinding(file);
 			if (previous) { this.removeSyncStateForBinding(previous); await this.saveLarkSyncState(); }
-			await this.rememberDocumentBinding(file, { token: data.token, url });
+			await this.rememberDocumentBinding(file, { token: data.token, nodeToken: data.wiki_node?.node_token, url });
 		} else {
 			if (data.type !== "file") throw new Error(this.t("invalidPublishedLink"));
 			const wiki = data.wiki_node;
@@ -4189,31 +4483,49 @@ exec "${nodePath}" "${scriptPath}" "$@"
 		throw new Error(this.t("invalidPublishedLink"));
 	}
 
-	private async syncPdfFile(file: TFile): Promise<void> {
-		await (this.operationQueue ??= new SyncQueue()).run(() => this.syncPdfFileUnlocked(file));
+	private async syncPdfFile(file: TFile, overwrite = false): Promise<void> {
+		await (this.operationQueue ??= new SyncQueue()).run(() => this.syncPdfFileUnlocked(file, undefined, overwrite));
 	}
 
-	private async syncPdfFileUnlocked(file: TFile, parent?: RemoteParent): Promise<void> {
+	private async syncPdfFileUnlocked(file: TFile, parent?: RemoteParent, overwrite = false): Promise<void> {
 		if (this.hasUnsavedSettings) await this.saveSettingsWithoutClearingCommandCache();
 		const existing = this.settings.pdfBindings[file.path];
+		if (existing?.fileToken) this.assertRemoteBindingExclusive(file.path,
+			{ token: existing.fileToken, nodeToken: existing.nodeToken, url: existing.url || "" });
 		const destination = existing?.parent || this.toPdfParent(parent
 			|| (await this.resolvePublishedFolderParentForFile(file))?.parent || await this.resolveRemoteRootParent());
-		const options = { vaultRoot: this.getVaultRoot(), vaultPath: file.path, parent: destination, scope: existing?.scope || "user" };
+		const options = { vaultRoot: this.getVaultRoot(), vaultPath: file.path, parent: destination, scope: existing?.scope || "user", force: overwrite };
+		if (overwrite && !existing) {
+			const match = this.selectOverwriteMatch(file.path, (await this.listRemoteDocuments(destination, "file")).filter((document) => document.title === file.name));
+			if (match) {
+				this.settings.pdfBindings[file.path] = { version: 1, key: createPdfBindingKey(options), vaultPath: file.path, parent: destination,
+					scope: options.scope, fileName: file.name, contentHash: "0".repeat(64), size: 5, status: "published",
+					fileToken: match.token, nodeToken: match.nodeToken, url: match.url, updatedAt: new Date().toISOString() };
+				await this.saveSettingsWithoutClearingCommandCache();
+			}
+		}
 		await publishPdf(options, {
 			loadBinding: async () => this.settings.pdfBindings[file.path],
 			saveBinding: async (_key, binding) => {
+				if (binding.fileToken) this.assertRemoteBindingExclusive(file.path,
+					{ token: binding.fileToken, nodeToken: binding.nodeToken, url: binding.url || "" });
 				this.settings.pdfBindings[file.path] = binding;
 				await this.saveSettingsWithoutClearingCommandCache();
 			},
 			runLarkCli: (args, commandOptions) => this.runLarkCli(args, commandOptions)
 		});
+		if (overwrite) {
+			const binding = this.settings.pdfBindings[file.path]!;
+			const removed = await this.cleanupRemoteDuplicates(file.path, binding.fileName, destination,
+				{ token: binding.fileToken!, nodeToken: binding.nodeToken, url: binding.url || "" }, "file");
+			if (removed) new Notice(this.t("noticeRemovedDuplicates", { count: String(removed) }), 8000);
+		}
 	}
 
-	private async listRemoteDocuments(parent: RemoteParent): Promise<Array<BoundLarkDocument & { title: string }>> {
-		const documents: Array<BoundLarkDocument & { title: string }> = [];
-		const wiki = parent.kind === "wiki" || parent.kind === "my_library";
-		let spaceId = "";
-		if (wiki) {
+	private async listRemoteWikiNodes(parent: RemoteParent): Promise<LarkCommandNode[]> {
+		const nodes: LarkCommandNode[] = [];
+		let spaceId = parent.spaceId || (parent.kind === "my_library" && !parent.token ? "my_library" : "");
+		if (!spaceId) {
 			const info = await this.runLarkCli(["wiki", "+node-get", "--as", "user", "--node-token", parent.token, "--json"]);
 			spaceId = info.data?.node?.space_id || info.data?.space_id || "";
 			if (!spaceId) throw new Error("Cannot resolve the published folder's wiki space.");
@@ -4221,24 +4533,41 @@ exec "${nodePath}" "${scriptPath}" "$@"
 		let cursor = "";
 		const seen = new Set<string>();
 		do {
-			const args = wiki
-				? ["wiki", "+node-list", "--as", "user", "--space-id", spaceId, "--parent-node-token", parent.token, "--page-size", "50", "--json"]
-				: ["drive", "files", "list", "--as", "user", "--folder-token", parent.token, "--page-size", "200", "--json"];
+			const args = ["wiki", "+node-list", "--as", "user", "--space-id", spaceId, "--page-size", "50", "--json"];
+			if (parent.token) args.push("--parent-node-token", parent.token);
 			if (cursor) args.push("--page-token", cursor);
 			const result = await this.runLarkCli(args);
 			const data = result.data;
-			if (wiki) {
-				if (!Array.isArray(data?.nodes)) throw new Error("Invalid wiki folder listing.");
-				for (const node of data.nodes) {
-					if (node.obj_type === "docx" && node.obj_token && node.title) {
-						documents.push({ title: node.title, token: node.obj_token, nodeToken: node.node_token, url: node.url || "" });
-					}
+			if (!Array.isArray(data?.nodes)) throw new Error("Invalid wiki folder listing.");
+			nodes.push(...data.nodes);
+			cursor = data.has_more ? data.page_token || data.next_page_token || "" : "";
+			if (data.has_more && (!cursor || seen.has(cursor))) throw new Error("Incomplete remote folder listing; operation stopped.");
+			seen.add(cursor);
+		} while (cursor);
+		return nodes;
+	}
+
+	private async listRemoteDocuments(parent: RemoteParent, objType: "docx" | "file" = "docx"): Promise<Array<BoundLarkDocument & { title: string }>> {
+		const documents: Array<BoundLarkDocument & { title: string }> = [];
+		const wiki = parent.kind === "wiki" || parent.kind === "my_library";
+		if (wiki) {
+			for (const node of await this.listRemoteWikiNodes(parent)) {
+				if (node.obj_type === objType && node.obj_token && node.title) {
+					documents.push({ title: node.title, token: node.obj_token, nodeToken: node.node_token, url: node.url || "" });
 				}
-			} else {
-				if (!Array.isArray(data?.files)) throw new Error("Invalid Drive folder listing.");
-				for (const file of data.files) {
-					if (file.type === "docx") documents.push({ title: file.name, token: file.token, url: file.url || "" });
-				}
+			}
+			return documents;
+		}
+		let cursor = "";
+		const seen = new Set<string>();
+		do {
+			const args = ["drive", "files", "list", "--as", "user", "--folder-token", parent.token, "--page-size", "200", "--json"];
+			if (cursor) args.push("--page-token", cursor);
+			const result = await this.runLarkCli(args);
+			const data = result.data;
+			if (!Array.isArray(data?.files)) throw new Error("Invalid Drive folder listing.");
+			for (const file of data.files) {
+				if (file.type === objType) documents.push({ title: file.name, token: file.token, url: file.url || "" });
 			}
 			cursor = data?.has_more ? data.page_token || data.next_page_token || "" : "";
 			if (data?.has_more && (!cursor || seen.has(cursor))) throw new Error("Incomplete remote folder listing; binding recovery stopped.");
@@ -4247,9 +4576,9 @@ exec "${nodePath}" "${scriptPath}" "$@"
 		return documents;
 	}
 
-	private async recoverPreparedBindings(files: FolderPreparedFile[], parents: Map<string, RemoteParent>, strict: boolean, onlyPath?: string): Promise<{ recovered: number; conflicts: number }> {
+	private async recoverPreparedBindings(files: FolderPreparedFile[], parents: Map<string, RemoteParent>, strict: boolean, onlyPath?: string, overwrite = false): Promise<{ recovered: number; conflicts: number }> {
 		let recovered = 0, conflicts = 0;
-		const listings = new Map<string, Array<BoundLarkDocument & { title?: string }>>();
+		const listings = new Map<string, Array<BoundLarkDocument & { title: string }>>();
 		const localCounts = new Map<string, number>();
 		const boundTokens = new Set(Object.values(this.settings.documentBindings).map((binding) => getDocumentStateKey(binding.token || binding.url)));
 		if (!files.some((prepared) => !prepared.binding && !this.settings.disconnectedBindings?.[prepared.file.path])) return { recovered, conflicts };
@@ -4277,13 +4606,23 @@ exec "${nodePath}" "${scriptPath}" "$@"
 			const title = extractTitle(prepared.file, prepared.preparedContent.content, "first-heading");
 			const matches = remote.filter((document) => document.title === title);
 			if (!matches.length) continue;
-			const match = matches[0]!;
+			const localAmbiguous = (localCounts.get(`${parent.kind}:${parent.token}:${title}`) || 0) > 1;
+			if (overwrite && localAmbiguous) throw new LocalizedSyncError(this.settings.language === "en"
+				? `Local notes have the same document title: ${title}. Use distinct titles before overwrite sync.`
+				: `本地有多篇笔记使用文档标题“${title}”，请先使用不同标题，再覆盖同步。`);
+			const match = overwrite ? this.selectOverwriteMatch(prepared.file.path, matches)! : matches[0]!;
 			const alreadyBound = boundTokens.has(getDocumentStateKey(match.token)) || Boolean(match.nodeToken && boundTokens.has(match.nodeToken));
-			if (matches.length !== 1 || alreadyBound || (localCounts.get(`${parent.kind}:${parent.token}:${title}`) || 0) > 1) {
+			if (!overwrite && (matches.length !== 1 || alreadyBound || localAmbiguous)) {
 				conflicts += 1;
-				if (strict) throw new LocalizedSyncError(this.settings.language === "en"
-					? `Several files match ${prepared.file.path} in Feishu. Use Set Feishu/Lark link before syncing.`
-					: `飞书中有多个同名文件：${prepared.file.path}。请右键选择“设置飞书链接”后再同步。`);
+				if (strict) {
+					if (localAmbiguous) throw new LocalizedSyncError(this.settings.language === "en"
+						? `Local notes share the document title ${title}. Use distinct titles before syncing.`
+						: `本地同级笔记的文档标题重复：“${title}”。请先使用不同标题，再同步。`);
+					if (alreadyBound) this.assertRemoteBindingExclusive(prepared.file.path, match);
+					throw new LocalizedSyncError(this.settings.language === "en"
+						? `Several files match ${prepared.file.path} in Feishu. Use Set Feishu/Lark link or Overwrite sync.`
+						: `飞书中有多个同名文件：${prepared.file.path}。请右键选择“设置飞书链接”或“覆盖同步到飞书”。`);
+				}
 				continue;
 			}
 			if (!match.url) {

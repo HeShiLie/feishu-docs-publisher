@@ -103,6 +103,7 @@ async function main() {
 
 	const syncState = await readSyncState(normalizedRepoRoot);
 	const tasks = await collectSyncTasks(normalizedRepoRoot, files, settings);
+	await assertExclusiveTaskBindings(normalizedRepoRoot, tasks, settings, syncState);
 	const failure = await runWithConcurrency(groupTasksByDoc(tasks, syncState), MAX_PARALLEL_SYNCS, async (taskGroup) => {
 		for (const task of taskGroup) {
 			await syncMarkdownTask(task, settings, syncState);
@@ -231,7 +232,32 @@ function readPersistedBinding(settings, path) {
 	}
 	const token = typeof record.token === "string" ? record.token.trim() : "";
 	const url = typeof record.url === "string" ? record.url.trim() : "";
-	return token || url ? { token, url } : null;
+	const nodeToken = typeof record.nodeToken === "string" ? record.nodeToken.trim() : "";
+	return token || url ? { token, url, nodeToken } : null;
+}
+
+async function assertExclusiveTaskBindings(repoRoot, tasks, settings, syncState) {
+	const tracked = uniqueFiles((await git(["ls-files", "-z", "*.md"])).split("\0"));
+	const registered = Object.keys(settings.documentBindings || {}).filter((path) => path.endsWith(".md"));
+	const all = await collectSyncTasks(repoRoot, uniqueFiles([...tracked, ...registered]), settings);
+	const owners = new Map();
+	const aliases = (task) => getDocumentStateKeys([task.binding.token, task.binding.nodeToken, task.binding.url,
+		resolveDocumentGroupKey(task, syncState)]);
+	for (const task of all) {
+		for (const key of aliases(task)) {
+			const paths = owners.get(key) || new Set();
+			paths.add(task.repoRelativePath);
+			owners.set(key, paths);
+		}
+	}
+	for (const task of tasks) {
+		for (const key of aliases(task)) {
+			const other = [...(owners.get(key) || [])].find((path) => path !== task.repoRelativePath);
+			if (other) throw new Error(readLanguage(settings) === "en"
+				? `Remote document is shared by local files ${task.repoRelativePath} and ${other}. Set distinct links before syncing.`
+				: `本地文件“${task.repoRelativePath}”和“${other}”绑定同一个远端文档。请先设置不同的飞书链接。`);
+		}
+	}
 }
 
 function groupTasksByDoc(tasks, syncState) {

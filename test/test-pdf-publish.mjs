@@ -98,6 +98,20 @@ test("changed Drive PDF overwrites same file token and then skips", async (t) =>
 	assert.equal(f.calls.length, 2);
 });
 
+test("explicit overwrite replaces the same PDF even when the local hash is unchanged", async (t) => {
+	const f = await fixture(t);
+	const first = await publishPdf(f.options, f.host);
+	const overwritten = await publishPdf({ ...f.options, force: true }, f.host);
+	assert.equal(overwritten.action, "updated");
+	assert.equal(overwritten.binding.fileToken, first.binding.fileToken);
+	assert.equal(overwritten.binding.contentHash, first.binding.contentHash);
+	assert.equal(overwritten.binding.key, first.binding.key);
+	assert.equal(f.calls.length, 2);
+	assert.equal(f.calls[1].args[f.calls[1].args.indexOf("--file-token") + 1], first.binding.fileToken);
+	assert.equal((await publishPdf(f.options, f.host)).action, "unchanged");
+	assert.equal(f.calls.length, 2);
+});
+
 test("unexpected replacement token is never silently adopted or uploaded again", async (t) => {
 	const f = await fixture(t);
 	const first = await publishPdf(f.options, f.host);

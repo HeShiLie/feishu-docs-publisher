@@ -716,7 +716,7 @@ const duplicateLocalRecovery = createPublishingPlugin();
 duplicateLocalRecovery.listRemoteDocuments = recoverPlugin.listRemoteDocuments;
 const duplicatePrepared = preparedForRecovery();
 const otherPrepared = { ...preparedForRecovery(), file: { ...fakeNote, path:"docs/Other.md" } };
-await assert.rejects(duplicateLocalRecovery.recoverPreparedBindings([duplicatePrepared,otherPrepared], parentsForRecovery, true), /多个同名文件/);
+await assert.rejects(duplicateLocalRecovery.recoverPreparedBindings([duplicatePrepared,otherPrepared], parentsForRecovery, true), /本地同级笔记的文档标题重复/);
 assert.deepEqual(duplicateLocalRecovery.settings.documentBindings, {}, "local title ambiguity must bind neither note");
 const legacyRecovery = createPublishingPlugin();
 legacyRecovery.listRemoteDocuments = async () => [{title:"Note",token:"existing-note",nodeToken:"legacy-node",url:"https://example.feishu.cn/wiki/legacy-node"}];
@@ -724,7 +724,7 @@ const legacyNote = { ...fakeNote, path: "legacy.md" };
 legacyRecovery.app.vault.getMarkdownFiles = () => [legacyNote];
 legacyRecovery.app.metadataCache.getFileCache = () => ({frontmatter:{lark_doc_url:"https://example.feishu.cn/wiki/legacy-node"}});
 legacyRecovery.runLarkCli = async () => ({ok:true,data:{token:"existing-note"}});
-await assert.rejects(legacyRecovery.recoverPreparedBindings([preparedForRecovery()], parentsForRecovery, true), /多个同名文件/);
+await assert.rejects(legacyRecovery.recoverPreparedBindings([preparedForRecovery()], parentsForRecovery, true), /legacy.md/);
 assert.deepEqual(legacyRecovery.settings.documentBindings, {});
 const duplicateRemoteRecovery = createPublishingPlugin();
 duplicateRemoteRecovery.listRemoteDocuments = async () => [
@@ -951,4 +951,222 @@ aliasMismatchPlugin.persistDocumentState = async(state) => {bootstrappedCanonica
 const canonicalBootstrap = await aliasMismatchPlugin.tryBootstrapPreciseSyncState("newDoc",["https://example.feishu.cn/wiki/alias"],"# Note\n\nBody");
 assert.equal(canonicalBootstrap.doc,"newDoc");
 assert.equal(bootstrappedCanonical.doc,"newDoc","bootstrap must not restore a stale alias for another document at the same revision");
+// Explicit overwrite adopts one stable target, confirms its write, then cleans siblings.
+function createOverwritePlugin(boundToken) {
+	const plugin = createPublishingPlugin();
+	const parent = { kind: "drive", token: "same-parent" };
+	const remote = [
+		{ token: "z-copy", url: "https://example.feishu.cn/docx/z-copy", title: "Note" },
+		{ token: "a-keep", url: "https://example.feishu.cn/docx/a-keep", title: "Note" },
+		{ token: "unrelated", url: "https://example.feishu.cn/docx/unrelated", title: "Other" }
+	];
+	const events = [];
+	plugin.app.vault.getMarkdownFiles = () => [fakeNote];
+	plugin.resolveRemoteRootParent = async () => parent;
+	plugin.listRemoteDocuments = async (destination) => { assert.deepEqual(destination, parent); return [...remote]; };
+	plugin.createLarkDocument = async () => assert.fail("Overwrite must adopt an existing match, not create another duplicate");
+	plugin.updateLarkDocument = async (doc, prepared, context) => {
+		assert.equal(context.strategy, "overwrite");
+		assert.equal(prepared.content, "# Note\n\nBody");
+		assert.equal(plugin.settings.documentBindings[fakeNote.path].token, doc, "keeper must be durable before overwrite");
+		events.push(`write:${doc}`);
+		return {};
+	};
+	plugin.runLarkCli = async (args) => {
+		assert.equal(args[1], "+delete");
+		assert.ok(args.includes("--yes"));
+		assert.equal(args[args.indexOf("--type") + 1], "docx");
+		const token = args[args.indexOf("--file-token") + 1];
+		events.push(`delete:${token}`);
+		remote.splice(remote.findIndex((document) => document.token === token), 1);
+		return { ok: true, data: {} };
+	};
+	if (boundToken) plugin.settings.documentBindings[fakeNote.path] = {
+		...remote.find((document) => document.token === boundToken), containerKind: "drive", containerToken: parent.token
+	};
+	return { plugin, parent, remote, events };
+}
+const overwriteOptions = { ...publishOptions, strategy: "overwrite" };
+const dedup = createOverwritePlugin();
+await dedup.plugin.syncFileInternal(fakeNote, overwriteOptions);
+assert.deepEqual(dedup.events, ["write:a-keep", "delete:z-copy"]);
+assert.deepEqual(dedup.remote.map((document) => document.token), ["a-keep", "unrelated"]);
+await dedup.plugin.syncFileInternal(fakeNote, overwriteOptions);
+assert.deepEqual(dedup.events, ["write:a-keep", "delete:z-copy", "write:a-keep"], "repeat overwrite retains the same target");
+
+const boundDedup = createOverwritePlugin("z-copy");
+await boundDedup.plugin.syncFileInternal(fakeNote, overwriteOptions);
+assert.deepEqual(boundDedup.events, ["write:z-copy", "delete:a-keep"], "an existing binding wins over sorted candidates");
+
+const failedWriteDedup = createOverwritePlugin();
+failedWriteDedup.plugin.updateLarkDocument = async () => { throw new Error("write confirmation failed"); };
+await assert.rejects(failedWriteDedup.plugin.syncFileInternal(fakeNote, overwriteOptions), /write confirmation failed/);
+assert.equal(failedWriteDedup.remote.length, 3, "no duplicate is deleted before the keeper write is confirmed");
+assert.deepEqual(failedWriteDedup.events, []);
+
+const failedDeleteDedup = createOverwritePlugin();
+const deleteAfterRetry = failedDeleteDedup.plugin.runLarkCli;
+failedDeleteDedup.plugin.runLarkCli = async () => { throw new Error("delete denied"); };
+await assert.rejects(failedDeleteDedup.plugin.syncFileInternal(fakeNote, overwriteOptions), /delete denied/);
+assert.equal(failedDeleteDedup.plugin.settings.documentBindings[fakeNote.path].token, "a-keep");
+failedDeleteDedup.plugin.runLarkCli = deleteAfterRetry;
+await failedDeleteDedup.plugin.syncFileInternal(fakeNote, overwriteOptions);
+assert.deepEqual(failedDeleteDedup.events, ["write:a-keep", "write:a-keep", "delete:z-copy"]);
+
+const protectedDuplicate = createOverwritePlugin("a-keep");
+protectedDuplicate.plugin.settings.documentBindings["different-local.md"] = { token: "z-copy", url: "https://example.feishu.cn/docx/z-copy" };
+await assert.rejects(protectedDuplicate.plugin.syncFileInternal(fakeNote, overwriteOptions), /different-local.md/);
+assert.ok(!protectedDuplicate.events.some((event) => event.startsWith("delete:")));
+
+const missingKeeper = createOverwritePlugin();
+await assert.rejects(missingKeeper.plugin.cleanupRemoteDuplicates(fakeNote.path, "Note", missingKeeper.parent,
+	{ token: "outside-parent", url: "https://example.feishu.cn/docx/outside-parent" }), /确认保留文档/);
+assert.deepEqual(missingKeeper.events, []);
+
+const sameWikiObject = createPublishingPlugin();
+sameWikiObject.listRemoteDocuments = async () => [
+	{ token: "one-document", nodeToken: "origin-node", url: "", title: "Note" },
+	{ token: "one-document", nodeToken: "shortcut-node", url: "", title: "Note" }
+];
+sameWikiObject.runLarkCli = async () => assert.fail("An alias of the kept document must never delete its origin");
+assert.equal(await sameWikiObject.cleanupRemoteDuplicates(fakeNote.path, "Note", { kind: "wiki", token: "parent" },
+	{ token: "one-document", nodeToken: "origin-node", url: "" }), 0);
+
+const partialListing = createOverwritePlugin();
+delete partialListing.plugin.listRemoteDocuments;
+partialListing.plugin.runLarkCli = async () => ({ ok: true, data: { files: [
+	{ token: "a-keep", type: "docx", name: "Note", url: "https://example.feishu.cn/docx/a-keep" }
+], has_more: true } });
+await assert.rejects(partialListing.plugin.syncFileInternal(fakeNote, overwriteOptions), /Incomplete remote folder listing/);
+assert.deepEqual(partialListing.events, [], "incomplete listings cannot select or delete a candidate");
+
+const folderOverwrite = createOverwritePlugin();
+folderOverwrite.plugin.app.vault.getFiles = () => [fakeNote];
+folderOverwrite.plugin.withDeferredLarkSyncStateSave = async (callback) => callback();
+folderOverwrite.plugin.resolveFolderParents = async () => new Map([["docs", folderOverwrite.parent]]);
+const folderOriginalCli = folderOverwrite.plugin.runLarkCli;
+folderOverwrite.plugin.runLarkCli = async (args) => args[1] === "+inspect"
+	? { ok: true, data: { token: "a-keep", type: "docx" } } : folderOriginalCli(args);
+await folderOverwrite.plugin.publishFolderInternal("docs", true);
+assert.deepEqual(folderOverwrite.events, ["write:a-keep", "delete:z-copy"], "folder overwrite forces content replacement and cleans duplicates");
+
+const ambiguousLocal = createOverwritePlugin();
+ambiguousLocal.plugin.app.vault.getMarkdownFiles = () => [fakeNote, { ...fakeNote, path: "docs/Other.md" }];
+await assert.rejects(ambiguousLocal.plugin.syncFileInternal(fakeNote, overwriteOptions), /本地笔记的文档标题相同/);
+assert.deepEqual(ambiguousLocal.events, []);
+
+const overwriteRecovery = createPublishingPlugin();
+overwriteRecovery.listRemoteDocuments = async () => [
+	{ token: "z-copy", url: "https://example.feishu.cn/docx/z-copy", title: "Note" },
+	{ token: "a-keep", url: "https://example.feishu.cn/docx/a-keep", title: "Note" }
+];
+const overwritePrepared = preparedForRecovery();
+await overwriteRecovery.recoverPreparedBindings([overwritePrepared], parentsForRecovery, true, undefined, true);
+assert.equal(overwritePrepared.binding.token, "a-keep", "folder overwrite resolves remote name ambiguity without creating a third copy");
+
+const wikiDedup = createPublishingPlugin();
+const wikiEvents = [];
+let wikiChildren = [{ node_token: "child-node", obj_type: "docx", obj_token: "child-doc", title: "Child" }];
+wikiDedup.settings.documentBindings["Child.md"] = { token: "child-doc", url: "", containerKind: "wiki", containerToken: "duplicate-node" };
+wikiDedup.listRemoteWikiNodes = async (parent) => { assert.equal(parent.token, "duplicate-node"); return [...wikiChildren]; };
+wikiDedup.runLarkCli = async (args) => {
+	if (args[1] === "+node-get") return { ok: true, data: { node: { node_token: "duplicate-node", obj_token: "duplicate-doc",
+		obj_type: "docx", title: "Note", parent_node_token: "wiki-parent", space_id: "space" } } };
+	if (args[1] === "+move") {
+		assert.equal(args[args.indexOf("--target-parent-token") + 1], "keep-node");
+		wikiEvents.push("move-child"); wikiChildren = []; return { ok: true, data: {} };
+	}
+	assert.equal(args[1], "+node-delete");
+	assert.ok(args.includes("--include-children=false"));
+	assert.ok(args.includes("--yes"));
+	assert.equal(wikiChildren.length, 0);
+	wikiEvents.push("delete-parent");
+	return { ok: true, data: {} };
+};
+await wikiDedup.removeWikiDuplicate({ kind: "wiki", token: "wiki-parent" }, { token: "duplicate-doc", nodeToken: "duplicate-node", url: "", title: "Note" },
+	{ token: "keep-doc", nodeToken: "keep-node", url: "" });
+assert.deepEqual(wikiEvents, ["move-child", "delete-parent"]);
+assert.equal(wikiDedup.settings.documentBindings["Child.md"].containerToken, "keep-node");
+wikiChildren = [{ node_token: "child-node" }];
+wikiDedup.runLarkCli = async (args) => {
+	if (args[1] === "+node-get") return { ok: true, data: { node: { node_token: "duplicate-node", obj_token: "duplicate-doc",
+		obj_type: "docx", title: "Note", parent_node_token: "wiki-parent", space_id: "space" } } };
+	if (args[1] === "+move") throw new Error("child move denied");
+	assert.fail("A failed child move must not delete its parent");
+};
+await assert.rejects(wikiDedup.removeWikiDuplicate({ kind: "wiki", token: "wiki-parent" },
+	{ token: "duplicate-doc", nodeToken: "duplicate-node", url: "", title: "Note" }, { token: "keep-doc", nodeToken: "keep-node", url: "" }), /child move denied/);
+
+wikiDedup.runLarkCli = async (args) => {
+	assert.equal(args[1], "+node-get");
+	return { ok: true, data: { node: { node_token: "duplicate-node", obj_token: "duplicate-doc", obj_type: "docx", title: "Renamed",
+		parent_node_token: "different-parent", space_id: "space" } } };
+};
+await assert.rejects(wikiDedup.removeWikiDuplicate({ kind: "wiki", token: "wiki-parent" },
+	{ token: "duplicate-doc", nodeToken: "duplicate-node", url: "", title: "Note" }, { token: "keep-doc", nodeToken: "keep-node", url: "" }), /位置或标题已变化/);
+
+const resetFolderBody = createPublishingPlugin();
+const resetCommands = [];
+let resetXml = '<title id="title">Old</title><p id="manual">Remote-only content</p><sub-page-list id="existing"/>';
+resetFolderBody.fetchLarkDocumentWithIds = async () => ({ doc: "folder-doc", content: resetXml, revisionId: 2 });
+resetFolderBody.runLarkCli = async (args) => {
+	resetCommands.push(args);
+	assert.equal(args[args.indexOf("--command") + 1], "overwrite");
+	resetXml = args[args.indexOf("--content") + 1];
+	return { ok: true, data: { document: { revision_id: 2 } } };
+};
+await resetFolderBody.ensureFolderPageList({ token: "folder-node", url: "https://example.feishu.cn/wiki/folder-node" }, "Root/Sub & docs", true);
+assert.equal(resetXml, '<title>Sub &amp; docs</title><sub-page-list/>');
+assert.equal(resetCommands.length, 1, "folder overwrite rebuilds the native index from local hierarchy");
+
+const folderConsolidation = createPublishingPlugin();
+folderConsolidation.settings.publishedFolders.Root = { remoteRoot: "Root", rootParent: { kind: "wiki", token: "space-root" } };
+folderConsolidation.settings.folderBindings = {
+	"target|wiki|space-root|Root/Sub": { token: "sub-node", url: "", containerKind: "wiki", containerToken: "root-node" },
+	"target|wiki|space-root|Root": { token: "root-node", url: "", containerKind: "wiki", containerToken: "space-root" }
+};
+const consolidatedPages = [];
+folderConsolidation.cleanupRemoteDuplicates = async (path, title, parent, keep) => {
+	consolidatedPages.push({ path, title, parent: parent.token, keep: keep.token }); return 1;
+};
+assert.equal(await folderConsolidation.consolidateOverwriteFolderPages("Root", "Root", { kind: "wiki", token: "space-root" }), 2);
+assert.deepEqual(consolidatedPages, [
+	{ path: "Root", title: "Root", parent: "space-root", keep: "root-node" },
+	{ path: "Root/Sub", title: "Sub", parent: "root-node", keep: "sub-node" }
+], "duplicate Wiki folders are merged from parent to child before recovering document bindings");
+
+const sharedSetting = createPublishingPlugin();
+sharedSetting.settings.documentBindings["Other.md"] = canonicalBinding;
+sharedSetting.runLarkCli = async () => ({ ok: true, data: { token: canonicalBinding.token, type: "docx" } });
+const beforeSharedSetting = JSON.stringify(sharedSetting.settings);
+await assert.rejects(sharedSetting.savePublishedBinding({ id: "markdown:New.md", path: "New.md", kind: "markdown", url: "" }, canonicalBinding.url), /Other.md/);
+assert.equal(JSON.stringify(sharedSetting.settings), beforeSharedSetting, "a conflicting link assignment must not alter existing bindings");
+
+// Shared bindings fail before any Markdown/PDF write, including legacy frontmatter.
+const sharedBinding = createPublishingPlugin();
+sharedBinding.settings.documentBindings = { [fakeNote.path]: canonicalBinding, "Other.md": canonicalBinding };
+sharedBinding.updateLarkDocument = async () => assert.fail("Shared documents must not be updated");
+await assert.rejects(sharedBinding.syncFileInternal(fakeNote, publishOptions), /Other.md/);
+await assert.rejects(sharedBinding.syncFileInternal(fakeNote, overwriteOptions), /Other.md/);
+await assert.rejects(sharedBinding.rememberDocumentBinding({ ...fakeNote, path: "New.md" }, canonicalBinding), /已绑定本地文件/);
+assert.equal(sharedBinding.settings.documentBindings["New.md"], undefined);
+
+const frontmatterConflict = createPublishingPlugin();
+frontmatterConflict.app.vault.getMarkdownFiles = () => [{ ...fakeNote, path: "Legacy.md" }];
+frontmatterConflict.app.metadataCache.getFileCache = () => ({ frontmatter: { lark_doc_url: canonicalBinding.url } });
+await assert.rejects(frontmatterConflict.rememberDocumentBinding(fakeNote, canonicalBinding), /Legacy.md/);
+
+const wikiAliasConflict = createPublishingPlugin();
+wikiAliasConflict.settings.documentBindings["Legacy.md"] = { token: "", url: "https://example.feishu.cn/wiki/shared-node" };
+wikiAliasConflict.runLarkCli = async () => ({ ok: true, data: { type: "docx", token: "shared-doc", wiki_node: { node_token: "shared-node" } } });
+wikiAliasConflict.updateLarkDocument = async () => assert.fail("Different URL forms for a shared document must be rejected before writes");
+await assert.rejects(wikiAliasConflict.syncOrRecreateDocument(fakeNote, { token: "shared-doc", url: "https://example.feishu.cn/docx/shared-doc" },
+	{ content: "# Note\n\nBody", images: [] }, undefined, { ...publishOptions, path: fakeNote.path }), /Legacy.md/);
+
+const sharedPdf = createPublishingPlugin();
+sharedPdf.settings.pdfBindings = { "One.pdf": { fileToken: "same-pdf" }, "Two.pdf": { fileToken: "same-pdf" } };
+sharedPdf.runLarkCli = async () => assert.fail("Shared PDFs must not be uploaded");
+await assert.rejects(sharedPdf.syncPdfFileUnlocked({ path: "One.pdf" }), /Two.pdf/);
+assert.equal(sharedPdf.t("menuOverwriteSyncToLark"), "Lark: 覆盖同步到飞书");
+
 console.log("main plugin tests passed");

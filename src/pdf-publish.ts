@@ -16,6 +16,8 @@ export interface PdfPublishOptions {
 	parent: PdfPublishParent;
 	/** Stable namespace for the CLI profile, tenant and user. Change it when identity changes. */
 	scope: string;
+	/** Explicit overwrite refreshes even when the local hash is unchanged. */
+	force?: boolean;
 }
 
 export interface PdfBinding {
@@ -191,7 +193,7 @@ async function publishLocked(options: PdfPublishOptions, key: string, host: PdfP
 		}
 		const contentHash = hash.digest("hex");
 		const size = (await stat(snapshot)).size;
-		const changed = Boolean(binding && (binding.contentHash !== contentHash || binding.size !== size));
+		const changed = Boolean(binding && (options.force || binding.contentHash !== contentHash || binding.size !== size));
 		if (changed && binding?.status === "uploaded") {
 			// A prior lookup failure or a manual bind may lack the wiki node token.
 			// Verify the saved remote file before overwriting its changed local copy.

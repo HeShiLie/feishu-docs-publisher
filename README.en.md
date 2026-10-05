@@ -71,13 +71,18 @@ which lark-cli
 
 ### Single-note Sync
 
-Markdown files, PDFs, and folders share three context-menu actions:
+Markdown files, PDFs, and folders share four context-menu actions:
 
 - `Lark: Sync to Feishu/Lark`: sync the selected note, PDF, or folder; publish it when no binding exists.
+- `Lark: Overwrite sync to Feishu/Lark`: overwrite from local content and remove other same-name documents in the corresponding remote parent.
 - `Lark: Set Feishu/Lark link`: bind an existing remote document, PDF, or folder.
 - `Lark: Open Feishu/Lark link`: open the bound remote page; disabled when no URL is available.
 
-To clear and rewrite a Markdown note's remote document, choose `Overwrite sync to Feishu/Lark` in the command palette.
+The command palette's `Overwrite sync to Feishu/Lark` performs the same single-note operation. A remote file may be bound to only one local file. Link assignment, binding recovery, and sync check for conflicts; existing shared bindings must be corrected before syncing.
+
+Explicit overwrite retains the bound document. Without a binding, it chooses one stable existing match. The binding is saved and the local-content write confirmed before other same-name documents in that remote parent are deleted. Normal sync, save-triggered sync, and Git hooks do not delete duplicates. A document bound to another local file cannot be deleted as a duplicate.
+
+Before deleting a duplicate wiki document, the plugin moves its child pages under the retained document. Folder overwrite recursively overwrites Markdown and PDF files and resets folder document bodies to native sub-page lists. If sibling Markdown notes use identical document titles, overwrite stops and asks you to use distinct titles.
 
 ![Obsidian actions](./docs/images/obsidian-actions.png)
 
@@ -110,7 +115,7 @@ Right-click a folder and choose `Lark: Sync to Feishu/Lark`. The plugin creates 
 
 In a wiki (`/wiki/...`) or personal document library, each folder is itself a document. The plugin inserts a native Feishu/Lark sub-page list into folder documents at every level. For example, both `github-org` and its `profile` subfolder document have their own list. Feishu/Lark maintains the document links automatically; the plugin does not generate links or embed child document content.
 
-Repeated syncs reuse an existing list and preserve other content on the folder page. Drive targets (`/drive/folder/...`) use ordinary folders and do not receive a list.
+Normal folder sync reuses an existing list and preserves other content on the folder page. Folder overwrite resets the folder page body to its native sub-page list. Drive targets (`/drive/folder/...`) use ordinary folders and do not receive a list.
 
 Supported link forms:
 
@@ -151,6 +156,8 @@ Feishu/Lark displays the remote PDF filename. Aliases, page numbers, and preview
 Git hooks also reuse PDF bindings and rewrite references with vault paths or paths relative to the note. Short filenames in other folders require Obsidian's resolver; include a path when using a hook. Reinstall an existing hook from plugin settings after updating the plugin.
 
 Persistent bindings and content hashes skip unchanged PDFs. Changes overwrite the same file token and preserve its link. Local renames migrate the association while preserving the remote name. PDFs update through manual or folder sync; save-triggered sync and Git hooks still cover Markdown and referenced images only.
+
+Explicit PDF overwrite replaces the same remote file even when the local file is unchanged. Without a binding, it first reuses a same-name file. After successful upload, it removes other same-name PDFs from that remote parent.
 
 An upload timeout keeps a pending record and stops blind retries. Reconcile the existing remote file through the binding editor before retrying. If no remote file was created, disconnect the pending local record and upload again.
 
