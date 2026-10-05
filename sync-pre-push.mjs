@@ -241,6 +241,19 @@ async function assertExclusiveTaskBindings(repoRoot, tasks, settings, syncState)
 	const tracked = uniqueFiles((await git(["ls-files", "-z", "*.md"])).split("\0"));
 	const registered = Object.keys(settings.documentBindings || {}).filter((path) => path.endsWith(".md"));
 	const all = await collectSyncTasks(repoRoot, uniqueFiles([...tracked, ...registered]), settings);
+	const canonicalByUrl = new Map();
+	for (const task of [...all, ...tasks]) {
+		const url = task.binding.url || "";
+		if (!url.includes("/wiki/") || (task.binding.token && task.binding.token !== getDocumentStateKey(url))) continue;
+		if (!canonicalByUrl.has(url)) {
+			const remote = await fetchLarkDocumentMarkdown(settings, url);
+			if (!remote.doc) throw new Error(`Cannot resolve the remote document for ${task.repoRelativePath}.`);
+			canonicalByUrl.set(url, getDocumentStateKey(remote.doc));
+		}
+		task.canonicalToken = canonicalByUrl.get(url);
+		task.doc = task.canonicalToken;
+		task.stateKeys = getDocumentStateKeys([...task.stateKeys, task.canonicalToken]);
+	}
 	const owners = new Map();
 	const aliases = (task) => getDocumentStateKeys([task.binding.token, task.binding.nodeToken, task.binding.url,
 		resolveDocumentGroupKey(task, syncState)]);

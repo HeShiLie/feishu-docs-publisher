@@ -837,7 +837,7 @@ combinedFolderPlugin.runLarkCli = async (args) => {
 	if (args[1] === "+node-get") return {ok:true,data:{space_id:"my-space"}};
 	if (args[1] === "+node-list") return {ok:true,data:{nodes:[],has_more:false}};
 	if (args[1] === "+create") { noteCreates++; return {ok:true,data:{document:{document_id:"folder-note",url:"https://example.feishu.cn/docx/folder-note"}}}; }
-	if (args[1] === "+inspect") return {ok:true,data:{token:"folder-note",type:"docx"}};
+	if (args[1] === "+inspect") return {ok:true,data:{token:args.includes("https://example.feishu.cn/wiki/root-node") ? "root-doc" : "folder-note",type:"docx"}};
 	if (args[1] === "+fetch") return {ok:true,data:{document:{document_id:"root-doc",content:folderPageXml,revision_id:1 + pageListInserts}}};
 	if (args[1] === "+update") {
 		assert.equal(args[args.indexOf("--command") + 1], "block_insert_after");
@@ -1203,6 +1203,37 @@ wikiAliasConflict.runLarkCli = async () => ({ ok: true, data: { type: "docx", to
 wikiAliasConflict.updateLarkDocument = async () => assert.fail("Different URL forms for a shared document must be rejected before writes");
 await assert.rejects(wikiAliasConflict.syncOrRecreateDocument(fakeNote, { token: "shared-doc", url: "https://example.feishu.cn/docx/shared-doc" },
 	{ content: "# Note\n\nBody", images: [] }, undefined, { ...publishOptions, path: fakeNote.path }), /Legacy.md/);
+
+const wikiShortcutConflict = createPublishingPlugin();
+wikiShortcutConflict.settings.documentBindings['Legacy.md'] = { token: 'other-node', url: 'https://example.feishu.cn/wiki/other-node' };
+const shortcutInspections = [];
+wikiShortcutConflict.runLarkCli = async (args) => {
+	assert.deepEqual(args.slice(0, 2), ['drive', '+inspect'], 'only read-only alias resolution is allowed');
+	const url = args[args.indexOf('--url') + 1];
+	shortcutInspections.push(url);
+	return { ok: true, data: { type: 'docx', token: 'shared-doc', wiki_node: { node_token: url.split('/').at(-1) } } };
+};
+wikiShortcutConflict.updateLarkDocument = async () => assert.fail('Wiki shortcuts sharing the same document must fail before writes');
+await assert.rejects(wikiShortcutConflict.syncOrRecreateDocument(fakeNote,
+	{ token: 'current-node', url: 'https://example.feishu.cn/wiki/current-node' },
+	{ content: '# Note\n\nBody', images: [] }, undefined, { ...publishOptions, path: fakeNote.path }), /Legacy.md/);
+assert.equal(shortcutInspections.length, 2);
+assert.equal(wikiShortcutConflict.settings.documentBindings['Legacy.md'].token, 'other-node', 'a rejected check must leave saved bindings intact');
+await assert.rejects(wikiShortcutConflict.savePublishedBinding({ path: 'New.md', kind: 'markdown' }, 'https://example.feishu.cn/docx/shared-doc'), /Legacy.md/);
+assert.equal(wikiShortcutConflict.settings.documentBindings['New.md'], undefined);
+
+const legacyProtectedDuplicate = createPublishingPlugin();
+legacyProtectedDuplicate.settings.documentBindings['Legacy.md'] = { token: '', url: 'https://example.feishu.cn/wiki/legacy-shortcut' };
+legacyProtectedDuplicate.listRemoteDocuments = async () => [
+	{ title: 'Note', token: 'keep-doc', nodeToken: 'keep-node', url: 'https://example.feishu.cn/wiki/keep-node' },
+	{ title: 'Note', token: 'duplicate-doc', nodeToken: 'duplicate-node', url: 'https://example.feishu.cn/wiki/duplicate-node' }
+];
+legacyProtectedDuplicate.runLarkCli = async (args) => {
+	assert.deepEqual(args.slice(0, 2), ['drive', '+inspect'], 'a legacy-bound duplicate must never be deleted');
+	return { ok: true, data: { type: 'docx', token: 'duplicate-doc', wiki_node: { node_token: 'legacy-shortcut' } } };
+};
+await assert.rejects(legacyProtectedDuplicate.cleanupRemoteDuplicates(fakeNote.path, 'Note', { kind: 'wiki', token: 'parent' },
+	{ token: 'keep-doc', nodeToken: 'keep-node', url: 'https://example.feishu.cn/wiki/keep-node' }), /Legacy.md/);
 
 const sharedPdf = createPublishingPlugin();
 sharedPdf.settings.pdfBindings = { "One.pdf": { fileToken: "same-pdf" }, "Two.pdf": { fileToken: "same-pdf" } };

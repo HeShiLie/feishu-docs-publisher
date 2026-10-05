@@ -969,11 +969,11 @@ export default class LarkCliSyncPlugin extends Plugin {
 		}
 	}
 
-	private getOtherRemoteBindingOwners(path: string): Map<string, string> {
-		const owners = new Map<string, string>();
+	private getOtherRemoteBindings(path: string): Map<string, BoundLarkDocument> {
+		const bindings = new Map<string, BoundLarkDocument>();
 		const add = (owner: string, binding: BoundLarkDocument): void => {
 			if (!binding?.token && !binding?.url && !binding?.nodeToken) return;
-			if (owner !== path) for (const key of this.getBindingAliases(binding)) owners.set(key, owner);
+			if (owner !== path) bindings.set(owner, binding);
 		};
 		for (const [owner, binding] of Object.entries(this.settings.documentBindings || {})) add(owner, binding);
 		for (const file of this.app?.vault?.getMarkdownFiles?.() || []) {
@@ -992,11 +992,18 @@ export default class LarkCliSyncPlugin extends Plugin {
 				}
 			}
 		}
+		return bindings;
+	}
+
+	private getOtherRemoteBindingOwners(path: string): Map<string, string> {
+		const owners = new Map<string, string>();
+		for (const [owner, binding] of this.getOtherRemoteBindings(path)) {
+			for (const key of this.getBindingAliases(binding)) owners.set(key, owner);
+		}
 		return owners;
 	}
 
-	private assertRemoteBindingExclusive(path: string, binding: BoundLarkDocument): void {
-		const owners = this.getOtherRemoteBindingOwners(path);
+	private assertRemoteBindingExclusive(path: string, binding: BoundLarkDocument, owners = this.getOtherRemoteBindingOwners(path)): void {
 		for (const key of this.getBindingAliases(binding)) {
 			const owner = owners.get(key);
 			if (owner) throw new LocalizedSyncError(this.settings.language === "en"
@@ -1007,17 +1014,27 @@ export default class LarkCliSyncPlugin extends Plugin {
 
 	private async resolveExclusiveRemoteBinding(path: string, binding: BoundLarkDocument): Promise<BoundLarkDocument> {
 		this.assertRemoteBindingExclusive(path, binding);
-		const known = [...Object.values(this.settings.documentBindings),
-			...(this.app?.vault?.getMarkdownFiles?.() || []).map((file) => this.getBinding(file)).filter((value): value is BoundLarkDocument => Boolean(value))];
-		if (!binding.nodeToken && (binding.url.includes("/wiki/") || known.some((value) => !value.nodeToken && value.url.includes("/wiki/")))) {
-			const inspected = await this.runLarkCli(["drive", "+inspect", "--as", "user", "--url", binding.url || binding.token,
-				...(!binding.url ? ["--type", "docx"] : []), "--json"]);
-			if (inspected.data?.type !== "docx" || !inspected.data.token) throw new Error(this.t("invalidPublishedLink"));
-			const resolved = { ...binding, token: inspected.data.token, nodeToken: inspected.data.wiki_node?.node_token || binding.nodeToken };
-			this.assertRemoteBindingExclusive(path, resolved);
+		const resolvedByUrl = new Map<string, BoundLarkDocument>();
+		const resolve = async (value: BoundLarkDocument): Promise<BoundLarkDocument> => {
+			const url = value.url || "";
+			if (!url.includes("/wiki/") || (value.token && value.token !== extractDocumentToken(url))) return value;
+			const cached = resolvedByUrl.get(url);
+			if (cached) return cached;
+			const inspected = await this.runLarkCli(["drive", "+inspect", "--as", "user", "--url", url, "--json"]);
+			if (!inspected.data?.token || !["docx", "file"].includes(inspected.data.type || "")) throw new Error(this.t("invalidPublishedLink"));
+			const resolved = { ...value, token: inspected.data.token, nodeToken: inspected.data.wiki_node?.node_token || value.nodeToken };
+			resolvedByUrl.set(url, resolved);
 			return resolved;
+		};
+		const resolved = await resolve(binding);
+		const owners = this.getOtherRemoteBindingOwners(path);
+		// Resolve the other owners as well: different Wiki nodes can point to the
+		// same underlying document, including legacy frontmatter-only bindings.
+		for (const [owner, other] of this.getOtherRemoteBindings(path)) {
+			for (const key of this.getBindingAliases(await resolve(other))) owners.set(key, owner);
 		}
-		return binding;
+		this.assertRemoteBindingExclusive(path, resolved, owners);
+		return resolved;
 	}
 
 	private selectOverwriteMatch(path: string, matches: Array<BoundLarkDocument & { title: string }>): BoundLarkDocument | undefined {
@@ -1043,7 +1060,7 @@ export default class LarkCliSyncPlugin extends Plugin {
 		// its origin would also invalidate the retained reference.
 		const duplicates = matches.filter((document) => document !== kept && document.token !== kept.token);
 		if (!duplicates.length) return 0;
-		for (const duplicate of duplicates) this.assertRemoteBindingExclusive(path, duplicate);
+		for (const duplicate of duplicates) await this.resolveExclusiveRemoteBinding(path, duplicate);
 		for (const duplicate of duplicates) {
 			if (parent.kind === "wiki" || parent.kind === "my_library") {
 				await this.removeWikiDuplicate(parent, duplicate, kept, objType);
@@ -4342,7 +4359,7 @@ exec "${nodePath}" "${scriptPath}" "$@"
 		const result = await this.runLarkCli(["drive", "+inspect", "--as", "user", "--url", url, "--json"]);
 		const data = result.data;
 		if (!data?.token) throw new Error(this.t("errorNoDocumentToken"));
-		this.assertRemoteBindingExclusive(entry.path, { token: data.token, nodeToken: data.wiki_node?.node_token, url });
+		await this.resolveExclusiveRemoteBinding(entry.path, { token: data.token, nodeToken: data.wiki_node?.node_token, url });
 		if (entry.kind === "folder") {
 			const wiki = data.wiki_node;
 			if (data.type !== "folder" && !wiki?.node_token) throw new Error(this.t("invalidPublishedLink"));
@@ -4490,7 +4507,7 @@ exec "${nodePath}" "${scriptPath}" "$@"
 	private async syncPdfFileUnlocked(file: TFile, parent?: RemoteParent, overwrite = false): Promise<void> {
 		if (this.hasUnsavedSettings) await this.saveSettingsWithoutClearingCommandCache();
 		const existing = this.settings.pdfBindings[file.path];
-		if (existing?.fileToken) this.assertRemoteBindingExclusive(file.path,
+		if (existing?.fileToken) await this.resolveExclusiveRemoteBinding(file.path,
 			{ token: existing.fileToken, nodeToken: existing.nodeToken, url: existing.url || "" });
 		const destination = existing?.parent || this.toPdfParent(parent
 			|| (await this.resolvePublishedFolderParentForFile(file))?.parent || await this.resolveRemoteRootParent());

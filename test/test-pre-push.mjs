@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
-import { chmod, cp, mkdir, mkdtemp, readFile, rm, unlink, writeFile } from "node:fs/promises";
+import { chmod, cp, mkdir, mkdtemp, readFile, readdir, rm, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { promisify } from "node:util";
@@ -78,6 +78,7 @@ async function run() {
 		await testStateWritePreservesExternalDocuments(workspace);
 		await testStateCacheTrim(workspace);
 		await testSharedDocumentAliasesAreRejected(workspace);
+		await testLegacyWikiAliasesAreRejected(workspace);
 		await testConcurrentFailureWaitsForStartedTasks(workspace);
 		await testMissingLarkCliFailsWithInstallPrompt(workspace);
 		await testUnsupportedLarkCliVersionFailsEarly(workspace);
@@ -789,6 +790,34 @@ async function testSharedDocumentAliasesAreRejected(workspace) {
 	assert.doesNotMatch(log, /docs \+update/);
 }
 
+async function testLegacyWikiAliasesAreRejected(workspace) {
+	for (const current of [
+		boundMarkdown('https://example.feishu.cn/wiki/current-node', 'Body'),
+		boundMarkdownWithToken('current-node', 'https://example.feishu.cn/wiki/current-node', 'Body'),
+		boundMarkdown('https://example.feishu.cn/docx/doc-token', 'Body')
+	]) {
+		await resetWorkspaceFiles(workspace);
+		await writeFile(join(workspace, 'bound.md'), current);
+		await writeFile(join(workspace, 'same-doc.md'), boundMarkdown('https://example.feishu.cn/wiki/other-shortcut', 'Other body'));
+		await execFileAsync('git', ['add', 'bound.md', 'same-doc.md'], { cwd: workspace });
+		await execFileAsync('git', ['commit', '-m', 'legacy aliases baseline'], { cwd: workspace });
+		const remoteHead = (await execFileAsync('git', ['rev-parse', 'HEAD'], { cwd: workspace })).stdout.trim();
+		await writeFile(join(workspace, 'bound.md'), current + '\nChanged');
+		await execFileAsync('git', ['add', 'bound.md'], { cwd: workspace });
+		await execFileAsync('git', ['commit', '-m', 'change one legacy-bound note'], { cwd: workspace });
+		const localHead = (await execFileAsync('git', ['rev-parse', 'HEAD'], { cwd: workspace })).stdout.trim();
+		await writeSettings(workspace, { autoSyncMode: 'pre-push', syncStrategy: 'overwrite', language: 'en' });
+		await writeSyncStateRaw(workspace, { version: 1, documents: {} });
+		await clearLog(workspace);
+		const result = await spawnHook(workspace, `refs/heads/main ${localHead} refs/heads/main ${remoteHead}\n`, { LARK_CLI_RETURN_DOC_TOKEN_FOR_URL: '1' });
+		assert.equal(result.exitCode, 1);
+		assert.match(result.stderr, /shared by local files.*bound.md.*same-doc.md/);
+		const log = await readLog(workspace);
+		assert.match(log, /docs \+fetch .*--doc https:\/\/example.feishu.cn\/wiki\/other-shortcut/);
+		assert.doesNotMatch(log, /docs \+update|\+media-insert/);
+	}
+}
+
 async function testConcurrentFailureWaitsForStartedTasks(workspace) {
 	await resetWorkspaceFiles(workspace);
 	await writeFile(join(workspace, "bound.md"), boundMarkdown("https://example.feishu.cn/docx/doc-token", "Body"));
@@ -1346,6 +1375,9 @@ async function testImageOnlyChangeSyncsReferencingDocument(workspace, persistedB
 }
 
 async function resetWorkspaceFiles(workspace) {
+	for (const file of await readdir(workspace)) {
+		if (file.startsWith('lark-cli.log.overwrite-')) await rm(join(workspace, file));
+	}
 	await unlink(join(workspace, "same-doc.md")).catch(() => {});
 	await unlink(join(workspace, "second.md")).catch(() => {});
 	await writeFile(join(workspace, "bound.md"), boundMarkdown("https://example.feishu.cn/docx/doc-token", "Body"));
@@ -1536,7 +1568,7 @@ const insertedAfterUpdatePath = process.env.LARK_CLI_LOG + ".inserted-after-upda
 const skippedRepairPath = process.env.LARK_CLI_LOG + ".skipped-repair-updated";
 const remoteHeadingUpdatePath = process.env.LARK_CLI_LOG + ".remote-heading-updated";
 const responseDoc = process.env.LARK_CLI_RETURN_DOC_TOKEN_FOR_URL
-  && (doc.includes("/docx/doc-token") || doc.includes("/wiki/wiki-node")) ? "doc-token" : doc;
+  && (doc.includes("/docx/doc-token") || doc.includes("/wiki/")) ? "doc-token" : doc;
 if (args.includes("+fetch")) {
   const isWithIds = args.includes("--detail") && args.includes("with-ids");
   const staleLimit = Number(process.env.LARK_CLI_STALE_MARKDOWN_FETCHES || "0");
