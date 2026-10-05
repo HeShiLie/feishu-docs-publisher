@@ -71,7 +71,7 @@ const build = await esbuild.build({
 		builder.onLoad({ filter: /.*/, namespace: "stub" }, () => ({ contents: stub }));
 	} }]
 });
-const { filterPublishedLinks, PublishedLinksModal, PublishedLinkBindingModal } = await import(
+const { filterPublishedLinks, collapseNestedFolderEntries, PublishedLinksModal, PublishedLinkBindingModal } = await import(
 	`data:text/javascript;base64,${Buffer.from(build.outputFiles[0].text).toString("base64")}`
 );
 globalThis.__ui = { settings: [], modals: [], focused: undefined };
@@ -91,10 +91,13 @@ const action = (setting, label) => {
 const entries = [
 	{ id: "folder", kind: "folder", path: "docs", url: "https://example.com/wiki/folder" },
 	{ id: "md", kind: "markdown", path: "docs/Alpha.md", name: "Alpha", url: "https://example.com/docx/alpha", token: "abc123" },
+	{ id: "nested-folder", kind: "folder", path: "docs/nested", url: "https://example.com/wiki/nested" },
 	{ id: "pdf", kind: "pdf", path: "docs/nested/manual.pdf", url: "" },
 	{ id: "sibling", kind: "markdown", path: "docs-old/other.md", url: "https://example.com/docx/other" }
 ];
-assert.deepEqual(filterPublishedLinks(entries, "", "/docs/").map((entry) => entry.id), ["folder", "md", "pdf"]);
+const scopedEntries = filterPublishedLinks(entries, "", "/docs/");
+assert.deepEqual(scopedEntries.map((entry) => entry.id), ["folder", "md", "nested-folder", "pdf"]);
+assert.deepEqual(collapseNestedFolderEntries(scopedEntries).map((entry) => entry.id), ["folder", "md", "pdf"]);
 assert.deepEqual(filterPublishedLinks(entries, "ALPHA abc123", "docs").map((entry) => entry.id), ["md"]);
 assert.deepEqual(filterPublishedLinks(entries, "manual", "docs\\nested").map((entry) => entry.id), ["pdf"]);
 
