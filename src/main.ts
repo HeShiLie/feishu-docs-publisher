@@ -380,15 +380,11 @@ const MESSAGES = {
 	"zh-CN": {
 		menuManagePublishedLinks: "已发布文件",
 		menuOpenPublishedLink: "打开飞书链接",
-		menuCopyPublishedLink: "复制飞书链接",
 		menuEditPublishedLink: "设置飞书链接",
 		invalidPublishedLink: "请输入此文件或文件夹的飞书链接。",
-		menuCopiedPublishedLink: "已复制飞书链接。",
 		commandSyncCurrentNote: "同步到飞书",
 		commandOverwriteCurrentNote: "覆盖同步到飞书",
 		menuSyncToLark: "Lark: 同步到飞书",
-		menuOverwriteSyncToLark: "Lark: 覆盖到飞书",
-		menuPublishFolderToLark: "Lark: 同步目录到飞书",
 		ribbonSyncCurrentNote: "同步到飞书",
 		noticeNoActiveMarkdownNote: "当前没有打开 Markdown 笔记。",
 		noticeSyncingToLark: "正在同步到飞书...",
@@ -459,15 +455,11 @@ const MESSAGES = {
 	en: {
 		menuManagePublishedLinks: "Published files",
 		menuOpenPublishedLink: "Open Feishu/Lark link",
-		menuCopyPublishedLink: "Copy Feishu/Lark link",
 		menuEditPublishedLink: "Set Feishu/Lark link",
 		invalidPublishedLink: "Enter the matching Feishu/Lark document, PDF, or folder URL.",
-		menuCopiedPublishedLink: "Feishu/Lark link copied.",
 		commandSyncCurrentNote: "Sync to Feishu/Lark",
 		commandOverwriteCurrentNote: "Overwrite sync to Feishu/Lark",
 		menuSyncToLark: "Lark: Sync to Feishu/Lark",
-		menuOverwriteSyncToLark: "Lark: Overwrite to Feishu/Lark",
-		menuPublishFolderToLark: "Lark: Sync folder to Feishu/Lark",
 		ribbonSyncCurrentNote: "Sync to Feishu/Lark",
 		noticeNoActiveMarkdownNote: "No active Markdown note.",
 		noticeSyncingToLark: "Syncing to Lark...",
@@ -619,37 +611,26 @@ export default class LarkCliSyncPlugin extends Plugin {
 		});
 
 		this.registerEvent(this.app.workspace.on("file-menu", (menu: Menu, file) => {
-			if (file instanceof TFile && file.extension === "md") {
+			let kind: PublishedLinkEntry["kind"];
+			if (file instanceof TFolder) {
+				kind = "folder";
+				menu.addItem((item) => item.setTitle(this.t("menuSyncToLark")).setIcon("folder-up")
+					.onClick(() => { void this.publishFolder(file.path); }));
+			} else if (file instanceof TFile && file.extension.toLowerCase() === "md") {
+				kind = "markdown";
 				menu.addItem((item) => {
 					item.setTitle(this.t("menuSyncToLark")).setIcon("refresh-cw").onClick(() => {
 						void this.syncFile(file);
 					});
 				});
-				menu.addItem((item) => {
-					item.setTitle(this.t("menuOverwriteSyncToLark")).setIcon("replace").onClick(() => {
-						void this.overwriteSyncFile(file);
-					});
-				});
-			}
-
-			if (file instanceof TFile && file.extension === "md") {
-				this.addPublishedLinkMenu(menu, file.path, "markdown");
-			}
-
-			if (file instanceof TFile && file.extension.toLowerCase() === "pdf") {
-				this.addPublishedLinkMenu(menu, file.path, "pdf");
+			} else if (file instanceof TFile && file.extension.toLowerCase() === "pdf") {
+				kind = "pdf";
 				menu.addItem((item) => item.setTitle(this.t("menuSyncToLark")).setIcon("upload")
 					.onClick(() => { void this.runWithNotice(this.t("noticeSyncingToLark"), () => this.syncPdfFile(file)); }));
+			} else {
+				return;
 			}
-
-			if (file instanceof TFolder) {
-				this.addPublishedLinkMenu(menu, file.path, "folder");
-				menu.addItem((item) => {
-					item.setTitle(this.t("menuPublishFolderToLark")).setIcon("folder-up").onClick(() => {
-						void this.publishFolder(file.path);
-					});
-				});
-			}
+			this.addPublishedLinkMenu(menu, file.path, kind);
 		}));
 
 		this.addSettingTab(new LarkCliSyncSettingTab(this.app, this));
@@ -4022,22 +4003,12 @@ exec "${nodePath}" "${scriptPath}" "$@"
 
 	private addPublishedLinkMenu(menu: Menu, path: string, kind: PublishedLinkEntry["kind"]): void {
 		const entry = this.getPublishedEntry(path, kind) || { id: `${kind}:${path}`, path, kind, url: "" };
-		if (entry.url) {
-			menu.addItem((item) => item.setTitle(this.t("menuOpenPublishedLink")).setIcon("external-link")
-				.onClick(() => window.open(entry.url)));
-			menu.addItem((item) => item.setTitle(this.t("menuCopyPublishedLink")).setIcon("copy")
-				.onClick(() => { void navigator.clipboard.writeText(entry.url)
-					.then(() => new Notice(this.t("menuCopiedPublishedLink")))
-					.catch((error: unknown) => new Notice(String(error))); }));
-		}
-		menu.addItem((item) => item.setTitle(this.t("menuEditPublishedLink")).setIcon("link")
+		menu.addItem((item) => item.setTitle(`Lark: ${this.t("menuEditPublishedLink")}`).setIcon("link")
 			.onClick(() => {
 				new PublishedLinkBindingModal(this.app, this.publishedLinksHost(), entry, () => {}).open();
 			}));
-		if (kind === "folder") {
-			menu.addItem((item) => item.setTitle(this.t("menuManagePublishedLinks")).setIcon("list")
-				.onClick(() => this.openPublishedLinks(path)));
-		}
+		menu.addItem((item) => item.setTitle(`Lark: ${this.t("menuOpenPublishedLink")}`).setIcon("external-link")
+			.setDisabled(!entry.url).onClick(() => { if (entry.url) window.open(entry.url); }));
 	}
 
 	openPublishedLinks(folderPath = ""): void {
