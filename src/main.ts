@@ -91,6 +91,7 @@ import {
 
 import { PublishedLinkBindingModal, PublishedLinkEntry, PublishedLinksHost, PublishedLinksModal } from "./published-links";
 import { createPdfBindingKey, PdfBinding, PdfPublishParent, publishPdf } from "./pdf-publish";
+import { buildPublishedPdfTargets, rewritePublishedPdfLinks } from "./pdf-links";
 import { SyncQueue } from "./sync-queue";
 
 const execFileAsync = promisify(execFile);
@@ -816,7 +817,9 @@ export default class LarkCliSyncPlugin extends Plugin {
 				return null;
 			}
 
-			const preparedContent = await this.readNoteForLark(file);
+			const rawPreparedContent = await this.readNoteForLark(file);
+			const preparedContent = { ...rawPreparedContent,
+				content: this.rewritePublishedPdfReferences(file, rawPreparedContent.content) };
 			const publishedFolder = await this.resolvePublishedFolderParentForFile(file);
 			if (publishedFolder) {
 				const siblings = this.app.vault.getMarkdownFiles().filter((candidate) => this.parentPath(candidate.path) === this.parentPath(file.path));
@@ -2906,10 +2909,19 @@ exec "${nodePath}" "${scriptPath}" "$@"
 	}
 
 	private rewriteInternalLinks(content: string, linkMap: Map<string, LinkTarget>, currentFile: TFile): string {
-		return rewriteInternalLinks(content, linkMap, currentFile);
+		return this.rewritePublishedPdfReferences(currentFile, rewriteInternalLinks(content, linkMap, currentFile));
+	}
+
+	private rewritePublishedPdfReferences(file: TFile, content: string): string {
+		const targets = buildPublishedPdfTargets(this.settings.pdfBindings, this.settings.disconnectedFolders);
+		const metadata = this.app.metadataCache;
+		return rewritePublishedPdfLinks(content, targets, file, metadata?.getFirstLinkpathDest
+			? (target, source) => metadata.getFirstLinkpathDest(target, source)?.path ?? null
+			: undefined);
 	}
 
 	private rewritePublishedFolderInternalLinks(file: TFile, content: string): string {
+		content = this.rewritePublishedPdfReferences(file, content);
 		if (!mayContainInternalLinks(content)) {
 			return content;
 		}

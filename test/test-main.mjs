@@ -813,6 +813,53 @@ pdfOnlyPlugin.syncPdfFileUnlocked = async () => {pdfOnlyUploaded=true;};
 await pdfOnlyPlugin.publishFolderInternal("Root");
 assert.equal(pdfOnlyUploaded,true,"PDF-only folders must create hierarchy and upload");
 
+const pdfReferencePlugin = createPublishingPlugin();
+const pdfCite = '<cite type="doc" doc-id="pdf-file" file-type="file"></cite>';
+pdfReferencePlugin.settings.pdfBindings["Root/Scan.pdf"] = { status: "published", fileToken: "pdf-file" };
+const pdfSource = "# Note\n\n[[Root/Scan.pdf]]\n\n![[Root/Scan.pdf#page=2]]";
+pdfReferencePlugin.readNoteForLark = async () => ({ content: pdfSource, images: [] });
+let firstPdfContent, firstPdfBaseline;
+pdfReferencePlugin.withTempMarkdown = async (_name, content, callback) => {
+	firstPdfContent = content;
+	return callback({ directory: "/tmp", fileName: "note.md" });
+};
+pdfReferencePlugin.runLarkCli = async () => ({ok:true,data:{document:{document_id:canonicalBinding.token,url:canonicalBinding.url}}});
+pdfReferencePlugin.saveCreatedDocumentStateFromBaseline = async (_binding, content) => { firstPdfBaseline = content; };
+await pdfReferencePlugin.syncFileInternal(fakeNote, publishOptions);
+assert.equal(firstPdfContent, `${pdfCite}\n\n${pdfCite}`, "first publish converts PDFs even outside a published folder");
+assert.equal(firstPdfBaseline, `# Note\n\n${pdfCite}\n\n${pdfCite}`, "sync baseline uses the uploaded references");
+let nextPdfContent;
+pdfReferencePlugin.updateLarkDocument = async (_doc, prepared) => { nextPdfContent = prepared.content; return {}; };
+await pdfReferencePlugin.syncFileInternal(fakeNote, { ...publishOptions, mode: "save", allowCreate: false });
+assert.equal(nextPdfContent, firstPdfBaseline, "save sync preserves file references");
+pdfReferencePlugin.settings.pdfBindings["Root/Scan.pdf"].status = "pending";
+assert.equal(pdfReferencePlugin.rewritePublishedPdfReferences(fakeNote, pdfSource), pdfSource);
+pdfReferencePlugin.settings.pdfBindings["Root/Scan.pdf"].status = "published";
+pdfReferencePlugin.settings.disconnectedFolders.Root = true;
+assert.equal(pdfReferencePlugin.rewritePublishedPdfReferences(fakeNote, pdfSource), pdfSource);
+delete pdfReferencePlugin.settings.disconnectedFolders.Root;
+pdfReferencePlugin.app.metadataCache.getFirstLinkpathDest = () => ({ path: "Unpublished/Scan.pdf" });
+assert.equal(pdfReferencePlugin.rewritePublishedPdfReferences(fakeNote, "[[Scan.pdf]]"), "[[Scan.pdf]]");
+
+const pdfFolderPlugin = createPublishingPlugin();
+pdfFolderPlugin.app.vault.getMarkdownFiles = () => [folderNote];
+pdfFolderPlugin.app.vault.getFiles = () => [folderNote, folderPdf];
+pdfFolderPlugin.withDeferredLarkSyncStateSave = async (callback) => callback();
+pdfFolderPlugin.runLarkCli = combinedFolderPlugin.runLarkCli;
+pdfFolderPlugin.readNoteForLark = async () => ({ content: "# Note\n\n[[Scan.pdf]]\n\n![[Scan.pdf]]", images: [] });
+const folderSequence = [];
+pdfFolderPlugin.syncPdfFileUnlocked = async (file) => {
+	folderSequence.push("upload");
+	pdfFolderPlugin.settings.pdfBindings[file.path] = { status: "published", fileToken: "pdf-file" };
+};
+pdfFolderPlugin.updateLarkDocument = async (_doc, prepared) => {
+	folderSequence.push("rewrite");
+	assert.equal(prepared.content, `# Note\n\n${pdfCite}\n\n${pdfCite}`);
+	return {};
+};
+await pdfFolderPlugin.publishFolderInternal("Root");
+assert.deepEqual(folderSequence, ["upload", "rewrite"], "new folder references resolve after PDF bindings are durable");
+
 const uncertainFolderPlugin = createPublishingPlugin();
 let uncertainFolderCreates=0;
 uncertainFolderPlugin.createRemoteFolderPage = async () => { uncertainFolderCreates++; throw new Error("folder create timeout"); };

@@ -1,5 +1,7 @@
 import { isLocalImagePlaceholder } from "./local-image";
 
+export { buildPublishedPdfTargets, rewritePublishedPdfLinks } from "./pdf-links";
+
 export {
 	buildLocalImageFileIndex,
 	containsLocalImagePlaceholders,

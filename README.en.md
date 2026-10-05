@@ -18,7 +18,7 @@ It is useful when Obsidian is your local source of truth and Feishu/Lark is wher
 - **Automatic sync strategy**: use the automatic strategy by default; small changes are synced incrementally, while large or complex changes fall back to full overwrite when safe incremental sync is not possible.
 - **Auto sync triggers**: sync after save, or sync bound notes before `git push` through a Git `pre-push` hook.
 - **Local image sync**: support Obsidian wiki embeds and relative Markdown images; changing only an image file also syncs bound notes that reference it.
-- **Internal link rewriting**: uploaded content rewrites Markdown and Obsidian internal links into Feishu/Lark document references.
+- **Internal link rewriting**: uploaded content rewrites folder Markdown links into document references, and published PDF wiki links, embeds, and Markdown links into clickable native file references.
 
 ## Installation
 
@@ -125,7 +125,23 @@ Older versions did not record document bindings with frontmatter disabled. `Reco
 
 ### PDF Files
 
-Folder sync uploads PDFs as native files inside the matching Drive folders or wiki nodes. A PDF context menu can also upload one file; a blank default target uploads a standalone PDF to the Drive root. PDFs are not converted to Docx or embedded into Markdown notes.
+Folder sync uploads PDFs as native files inside the matching Drive folders or wiki nodes. A PDF context menu can also upload one file; a blank default target uploads a standalone PDF to the Drive root.
+
+Supported PDF references:
+
+```md
+[[papers/report.pdf]]
+![[papers/report.pdf]]
+[[report.pdf|Read the report]]
+![[report.pdf#page=2]]
+[Read the report](papers/report.pdf)
+```
+
+After uploading PDFs, folder sync rewrites these references into native Feishu/Lark file references. First-time single-note publishing, manual updates, and save-triggered sync also reuse existing PDF bindings. For a PDF outside the synced folder, upload it separately or bind its existing remote URL through the binding editor before syncing the note. Local wiki links and embeds remain unchanged.
+
+Feishu/Lark displays the remote PDF filename. Aliases, page numbers, and preview dimensions are omitted; embeds also become clickable file references. PDFs are not converted to Docx or expanded into page previews. Unpublished, pending, missing, and code-example references stay literal. Obsidian resolves duplicate filenames to avoid linking to a different PDF.
+
+Git hooks also reuse PDF bindings and rewrite references with vault paths or paths relative to the note. Short filenames in other folders require Obsidian's resolver; include a path when using a hook. Reinstall an existing hook from plugin settings after updating the plugin.
 
 Persistent bindings and content hashes skip unchanged PDFs. Changes overwrite the same file token and preserve its link. Local renames migrate the association while preserving the remote name. PDFs update through manual or folder sync; save-triggered sync and Git hooks still cover Markdown and referenced images only.
 

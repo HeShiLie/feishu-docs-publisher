@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { execFile } from "child_process";
 import { access, mkdir, mkdtemp, readFile, rename, rm, stat, writeFile } from "fs/promises";
-import { constants } from "fs";
+import { constants, existsSync } from "fs";
 import { basename, dirname, join, relative, resolve, sep } from "path";
 import { tmpdir } from "os";
 import { promisify } from "util";
@@ -18,6 +18,8 @@ import {
 } from "./lark-cli-command.mjs";
 import {
 	buildSyncPlan,
+	buildPublishedPdfTargets,
+	rewritePublishedPdfLinks,
 	buildUpdateCommandArgs,
 	buildMediaInsertArgs,
 	buildMediaMoveArgs,
@@ -262,7 +264,17 @@ async function syncMarkdownTask(task, settings, syncState) {
 	try {
 		const file = { basename: basename(task.filePath, ".md") };
 		const normalizedContent = removeBindingOnlyFrontmatterBeforeNextFrontmatter(task.content);
-		const markdownForLark = prepareNoteContentForLark(file, removeLarkBinding(normalizedContent), settings.titleSource);
+		const rawMarkdownForLark = prepareNoteContentForLark(file, removeLarkBinding(normalizedContent), settings.titleSource);
+		const markdownForLark = rewritePublishedPdfLinks(rawMarkdownForLark,
+			buildPublishedPdfTargets(settings.pdfBindings, settings.disconnectedFolders),
+			{ path: task.repoRelativePath }, (target) => {
+				// Without Obsidian's metadata cache, accept only explicit vault/relative paths.
+				for (const candidate of [resolve(dirname(task.filePath), target), resolve(task.vaultRoot, target)]) {
+					const path = relative(task.vaultRoot, candidate).split(sep).join("/");
+					if (path !== ".." && !path.startsWith("../") && existsSync(candidate)) return path;
+				}
+				return null;
+			});
 		const preparedContent = await prepareLocalImages({
 			vaultRoot: task.vaultRoot,
 			markdownPath: task.repoRelativePath,

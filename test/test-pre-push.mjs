@@ -58,6 +58,7 @@ async function run() {
 		await testOverwriteDoesNotPersistEmptyState(workspace);
 		await testOverwritePreservesDocumentTitleBeforeUpdate(workspace);
 		await testOverwriteUpdates(workspace);
+		await testPublishedPdfReferences(workspace);
 		await testUnboundFilesDoNotBlock(workspace);
 		await testDisconnectedBindingsBlockLegacyFrontmatter(workspace);
 		await testFalseAndUnrelatedTombstonesDoNotBlock(workspace);
@@ -943,6 +944,27 @@ async function testOverwriteUpdates(workspace) {
 	const log = await readLog(workspace);
 	assert.match(log, /docs \+update/);
 	assert.match(log, /--command overwrite/);
+}
+
+async function testPublishedPdfReferences(workspace) {
+	await resetWorkspaceFiles(workspace);
+	await mkdir(join(workspace, "papers"), { recursive: true });
+	await writeFile(join(workspace, "papers/report.pdf"), "%PDF-1.4\n%%EOF");
+	const source = boundMarkdown("https://example.feishu.cn/docx/doc-token", "[[papers/report.pdf]] and ![[papers/report.pdf#page=2]]");
+	await writeFile(join(workspace, "bound.md"), source);
+	await execFileAsync("git", ["add", "bound.md"], { cwd: workspace });
+	await writeSettings(workspace, { syncStrategy: "overwrite", language: "en",
+		documentBindings: { "bound.md": { token: "doc-token" } },
+		pdfBindings: { "papers/report.pdf": { status: "published", fileToken: "pdf-file" } } });
+	await writeSyncStateRaw(workspace, { version: 1, documents: {} });
+	await clearLog(workspace);
+	await runHook(workspace);
+	const uploaded = await readFile(join(workspace, "lark-cli.log.overwrite-doc-token.md"), "utf8");
+	assert.equal((uploaded.match(/<cite type="doc" doc-id="pdf-file" file-type="file"><\/cite>/g) || []).length, 2);
+	assert.doesNotMatch(uploaded, /\[\[/);
+	assert.doesNotMatch(await readLog(workspace), /drive \+upload/, "the hook only reuses PDF bindings");
+	assert.equal(await readFile(join(workspace, "bound.md"), "utf8"), source);
+	await rm(join(workspace, "papers"), { recursive: true, force: true });
 }
 
 async function testOverwriteDoesNotPersistEmptyState(workspace) {
