@@ -220,8 +220,32 @@ const MIN_REPLACE_RUN_LENGTH_TO_COMPACT = 3;
 const DOCUMENT_END_BLOCK_ID = "-1";
 
 export function prepareNoteContentForLark(file: NoteFile, content: string, titleSource: TitleSource): string {
-	const title = extractTitle(file, content, titleSource);
-	return prependMarkdownTitle(content, title);
+	const normalizedContent = separateHeadingImages(content);
+	const title = extractTitle(file, normalizedContent, titleSource);
+	return prependMarkdownTitle(normalizedContent, title);
+}
+
+function separateHeadingImages(content: string): string {
+	let fence: string | undefined;
+	return content.replace(/\r\n/g, "\n").split("\n").map((line) => {
+		const fenceMatch = line.match(/^\s{0,3}(`{3,}|~{3,})/);
+		if (fenceMatch) {
+			const marker = fenceMatch[1] || "";
+			if (!fence) fence = marker;
+			else if (marker[0] === fence[0] && marker.length >= fence.length) fence = undefined;
+			return line;
+		}
+		if (fence || !/^#{1,6}\s+/.test(line)) return line;
+		const images: string[] = [];
+		const heading = line.replace(/(`+)[^\n]*?\1|<img\b[^>]*>/gi, (image, codeDelimiter: string | undefined) => {
+			if (codeDelimiter) return image;
+			images.push(image);
+			return "";
+		}).trimEnd();
+		if (images.length === 0) return line;
+		const text = heading.replace(/^(#{1,6})\s+/, "$1 ");
+		return [...(/^#{1,6}\s*$/.test(text) ? [] : [text]), ...images].join("\n\n");
+	}).join("\n");
 }
 
 export function extractTitle(file: NoteFile, content: string, titleSource: TitleSource): string {
@@ -1571,6 +1595,21 @@ export function isSyncContentSignatureEquivalent(
 	return areSyncContentUnitsEquivalent(current.units, expected.units);
 }
 
+// Feishu rehosts imported images. Ignore their new URLs only when confirming a
+// submitted write; planning and cached state comparisons still use source hashes.
+export async function isRemoteMarkdownContentEquivalent(
+	remoteMarkdown: string,
+	expected: SyncContentSignature
+): Promise<boolean> {
+	const current = await createSyncContentSignature(remoteMarkdown);
+	if (isSyncContentSignatureEquivalent(current, expected)) return true;
+	return current.units.length === expected.units.length && current.units.every((unit, index) => {
+		const expectedUnit = expected.units[index];
+		return unit.kind === expectedUnit?.kind
+			&& (unit.kind === "img" || unit.hash === expectedUnit.hash);
+	});
+}
+
 export async function isRemoteXmlContentEquivalent(remoteXml: string, markdown: string): Promise<boolean> {
 	const markdownUnits = await createMarkdownSyncUnits(markdown);
 	const remoteUnits = readRemoteTopLevelUnits(remoteXml);
@@ -2734,7 +2773,9 @@ function isMarkdownParagraphLabelBoundary(line: string): boolean {
 }
 
 function readMarkdownBlockKind(line: string): string {
-	if (isLocalImagePlaceholder(line)) {
+	if (isLocalImagePlaceholder(line)
+		|| /^\s*<img\b[^>]*>\s*$/i.test(line)
+		|| /^\s*!\[[^\]]*\]\([^\n]+\)\s*$/.test(line)) {
 		return "img";
 	}
 
@@ -3140,7 +3181,8 @@ function normalizeFingerprintText(content: string): string {
 }
 
 function normalizeMarkdownRoundTripText(content: string): string {
-	return normalizeMarkdownInternalLinks(normalizeMarkdownFormattedSpanSpacing(normalizeMarkdownDocReferences(content)));
+	const normalizedAutolinks = content.replace(/<((?:https?:\/\/|mailto:)[^\s<>]+)>/gi, "[$1]($1)");
+	return normalizeMarkdownInternalLinks(normalizeMarkdownFormattedSpanSpacing(normalizeMarkdownDocReferences(normalizedAutolinks)));
 }
 
 function normalizeMarkdownLinkQuery(target: string): string {

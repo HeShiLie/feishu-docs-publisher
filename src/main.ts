@@ -39,6 +39,7 @@ import {
 	isDocumentStateContentEquivalent,
 	isDocumentStateBlockMappingAcceptable,
 	invalidateLocalImageSyncState,
+	isRemoteMarkdownContentEquivalent as isExportedMarkdownContentEquivalent,
 	isRemoteXmlContentEquivalent,
 	isSyncContentSignatureEquivalent,
 	LEGACY_FRONTMATTER_SYNCED_AT_KEY,
@@ -2487,7 +2488,7 @@ exec "${nodePath}" "${scriptPath}" "$@"
 				continue;
 			}
 
-			const hasLocalImages = expectedSignature.units.some((unit) => unit.kind === "img");
+			const hasLocalImages = containsLocalImagePlaceholders(baselineMarkdown);
 			const isExpectedContentVisible = hasLocalImages
 				? await isRemoteXmlContentEquivalent(remoteXml.content, baselineMarkdown)
 				: await this.isRemoteMarkdownContentEquivalent(
@@ -2806,8 +2807,7 @@ exec "${nodePath}" "${scriptPath}" "$@"
 		remoteMarkdown: string,
 		expectedSignature: Awaited<ReturnType<typeof createSyncContentSignature>>
 	): Promise<boolean> {
-		const remoteSignature = await createSyncContentSignature(remoteMarkdown);
-		return isSyncContentSignatureEquivalent(remoteSignature, expectedSignature);
+		return isExportedMarkdownContentEquivalent(remoteMarkdown, expectedSignature);
 	}
 
 	private isRemoteDocumentStateRefreshAccepted(

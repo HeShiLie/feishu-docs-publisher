@@ -450,6 +450,26 @@ await roundTripPlugin.saveRemoteDocumentStateFromBaselineAfterExpectedRevision(
 assert.equal(roundTripState.revisionId, 16);
 assert.deepEqual(roundTripState.units.map((unit) => unit.blockId), ["heading", "reference", "video"]);
 
+const headingImagePlugin = createPlugin();
+headingImagePlugin.settings.titleSource = 'file-name';
+headingImagePlugin.app = { vault: { read: async () => '# <img src="https://example.com/logo.png" height="32" /> Guide\n\nBody\n\n- Repositories: <https://example.com/repos>' } };
+const headingImagePrepared = await headingImagePlugin.readNoteForLark({ basename: 'Note', path: 'Note.md' });
+assert.equal(headingImagePrepared.content, '# Note\n\n# Guide\n\n<img src="https://example.com/logo.png" height="32" />\n\nBody\n\n- Repositories: <https://example.com/repos>');
+assert.deepEqual(headingImagePrepared.images, [], 'external images should be imported directly');
+headingImagePlugin.fetchLarkDocumentWithIds = async () => ({
+	doc: 'doc-token', revisionId: 17,
+	content: '<title id="doc-token">Note</title><h1 id="guide">Guide</h1><img id="logo" src="rehosted"/><p id="body">Body</p><ul><li id="repos">Repositories: <a href="https://example.com/repos">https://example.com/repos</a></li></ul>'
+});
+headingImagePlugin.fetchLarkDocumentMarkdown = async () => ({
+	doc: 'doc-token', revisionId: 17,
+	content: '# Note\n\n# Guide\n\n![](https://feishu.cn/file/rehosted)\n\nBody\n\n- Repositories: [https://example.com/repos](https://example.com/repos)'
+});
+let headingImageState;
+headingImagePlugin.persistDocumentState = async (state) => { headingImageState = state; };
+headingImagePlugin.sleep = async () => { throw new Error('rehosted external images should confirm immediately'); };
+await headingImagePlugin.saveRemoteDocumentStateFromBaselineAfterExpectedRevision('doc-token', [], headingImagePrepared.content, 17, { mode: 'save', path: 'Note.md' });
+assert.deepEqual(headingImageState.units.map((unit) => unit.blockId), ['guide', 'logo', 'body', 'repos']);
+
 const noticePlugin = createPlugin();
 noticePlugin.autoSyncRunningPaths = new Set();
 noticePlugin.autoSyncPendingPaths = new Set();

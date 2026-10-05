@@ -26,6 +26,7 @@ const {
 	getDocumentStateKeys,
 	isDocumentStateBlockMappingAcceptable,
 	isDocumentStateContentEquivalent,
+	isRemoteMarkdownContentEquivalent,
 	isRemoteXmlContentEquivalent,
 	isSyncContentSignatureEquivalent,
 	mergeSyncStateFiles,
@@ -846,6 +847,36 @@ for (const [left, right] of [
 	), false, "query boundaries, path separators and spaces must remain distinct");
 }
 assert.ok(await createSyncContentSignature('# Note\n\n[Link](https://example.com/?q=bad%escape)'), "malformed escapes must not crash confirmation");
+const autolinkSignature = await createSyncContentSignature('# Note\n\n- Repositories: <https://example.com/orgs/team/repos>');
+assert.ok(isSyncContentSignatureEquivalent(
+	await createSyncContentSignature('# Note\n\n- Repositories: [https://example.com/orgs/team/repos](https://example.com/orgs/team/repos)'),
+	autolinkSignature
+));
+assert.equal(isSyncContentSignatureEquivalent(
+	await createSyncContentSignature('# Note\n\n- Repositories: [https://example.com/orgs/team/repos](https://example.com/other)'),
+	autolinkSignature
+), false);
+const importedImageBaseline = '# Note\n\n## Guide\n\n<img src="https://example.com/logo.png" height="32" />\n\nBody';
+const importedImageSignature = await createSyncContentSignature(importedImageBaseline);
+const rehostedImageExport = '# Note\n\n## Guide\n\n![](https://feishu.cn/file/rehostedImage)\n\nBody';
+assert.ok(await isRemoteMarkdownContentEquivalent(rehostedImageExport, importedImageSignature));
+assert.equal(isSyncContentSignatureEquivalent(await createSyncContentSignature(rehostedImageExport), importedImageSignature), false, "planning must retain source image identity");
+for (const changedExport of [
+	rehostedImageExport.replace('## Guide\n\n', ''),
+	rehostedImageExport.replace('![](https://feishu.cn/file/rehostedImage)\n\n', ''),
+	rehostedImageExport + '\n\n![](https://feishu.cn/file/extraImage)',
+	'# Note\n\n![](https://feishu.cn/file/rehostedImage)\n\n## Guide\n\nBody',
+	rehostedImageExport.replace('Body', 'Different body')
+]) {
+	assert.equal(await isRemoteMarkdownContentEquivalent(changedExport, importedImageSignature), false, "confirmation must reject missing/moved/extra images or lost text");
+}
+const importedImageState = await createDocumentSyncStateFromRemote('doc-token', importedImageBaseline,
+	'<title id="doc-token">Note</title><h2 id="guide">Guide</h2><img id="image" src="rehostedImage"/><p id="body">Body</p>', 14);
+assert.deepEqual(importedImageState.units.map((unit) => unit.blockId), ['guide', 'image', 'body']);
+const changedImagePlan = await buildSyncPlan({
+	doc: 'doc-token', markdown: importedImageBaseline.replace('logo.png', 'other.png'), contentFileName: 'sync.md', strategy: 'auto', state: importedImageState
+});
+assert.notEqual(changedImagePlan.mode, 'skipped', "changing the source image must still submit an update");
 const paragraphUrlSignature = await createSyncContentSignature([
 	"# Note",
 	"",

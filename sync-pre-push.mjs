@@ -30,6 +30,7 @@ import {
 	createEmptySyncStateFile,
 	createSyncContentSignature,
 	isDocumentStateBlockMappingAcceptable,
+	isRemoteMarkdownContentEquivalent,
 	isRemoteXmlContentEquivalent,
 	getDocumentStateKey,
 	getDocumentStateKeys,
@@ -751,11 +752,7 @@ async function createRemoteDocumentState(doc, remoteMarkdown, remoteXml, expecte
 }
 
 async function isRemoteMarkdownContentExpected(remoteMarkdown, expectedMarkdown) {
-	const [remoteSignature, expectedSignature] = await Promise.all([
-		createSyncContentSignature(remoteMarkdown),
-		createSyncContentSignature(expectedMarkdown)
-	]);
-	return isSyncContentSignatureEquivalent(remoteSignature, expectedSignature);
+	return isRemoteMarkdownContentEquivalent(remoteMarkdown, await createSyncContentSignature(expectedMarkdown));
 }
 
 async function isRemoteContentExpected(remoteMarkdown, remoteXml, expectedMarkdown) {
