@@ -2,7 +2,7 @@
 import { execFile } from "child_process";
 import { access, mkdir, mkdtemp, readFile, rename, rm, stat, writeFile } from "fs/promises";
 import { constants } from "fs";
-import { basename, dirname, join, resolve } from "path";
+import { basename, dirname, join, relative, resolve, sep } from "path";
 import { tmpdir } from "os";
 import { promisify } from "util";
 import {
@@ -81,6 +81,7 @@ let checkedLarkCliVersionExecutable = "";
 let pendingLarkCliVersionExecutable = "";
 let pendingLarkCliVersionCheck = null;
 let settingsPath = "";
+let settingsWriteQueue = Promise.resolve();
 const changedSyncStateKeys = new Set();
 const removedSyncStateKeys = new Set();
 
@@ -99,7 +100,7 @@ async function main() {
 	}
 
 	const syncState = await readSyncState(normalizedRepoRoot);
-	const tasks = await collectSyncTasks(normalizedRepoRoot, files);
+	const tasks = await collectSyncTasks(normalizedRepoRoot, files, settings);
 	const failure = await runWithConcurrency(groupTasksByDoc(tasks, syncState), MAX_PARALLEL_SYNCS, async (taskGroup) => {
 		for (const task of taskGroup) {
 			await syncMarkdownTask(task, settings, syncState);
@@ -118,8 +119,8 @@ async function collectChangedFiles() {
 		return uniqueFiles(fromRefs);
 	}
 
-	const changed = await git(["diff", "--name-only", "HEAD"]);
-	return uniqueFiles(changed.split(/\r?\n/));
+	const changed = await git(["diff", "--name-only", "-z", "HEAD"]);
+	return uniqueFiles(changed.split("\0"));
 }
 
 async function collectSyncMarkdownFiles(repoRoot, changedFiles) {
@@ -129,8 +130,8 @@ async function collectSyncMarkdownFiles(repoRoot, changedFiles) {
 		return uniqueFiles(markdownFiles);
 	}
 
-	const trackedMarkdownOutput = await git(["ls-files", "*.md"]);
-	const trackedMarkdownFiles = uniqueFiles(trackedMarkdownOutput.split(/\r?\n/));
+	const trackedMarkdownOutput = await git(["ls-files", "-z", "*.md"]);
+	const trackedMarkdownFiles = uniqueFiles(trackedMarkdownOutput.split("\0"));
 	const referencingFiles = await findReferencingMarkdownFiles({
 		vaultRoot: repoRoot,
 		markdownPaths: trackedMarkdownFiles,
@@ -149,13 +150,13 @@ async function collectFilesFromPushRefs(refs) {
 		}
 
 		if (!remoteSha || remoteSha === ZERO_REF) {
-			const output = await git(["ls-files"]);
-			files.push(...output.split(/\r?\n/));
+			const output = await git(["ls-files", "-z"]);
+			files.push(...output.split("\0"));
 			continue;
 		}
 
-		const output = await git(["diff", "--name-only", `${remoteSha}..${localSha}`]);
-		files.push(...output.split(/\r?\n/));
+		const output = await git(["diff", "--name-only", "-z", `${remoteSha}..${localSha}`]);
+		files.push(...output.split("\0"));
 	}
 
 	return files;
@@ -180,7 +181,7 @@ function isSupportedImageFile(path) {
 	return /\.(?:png|jpe?g|gif|webp|bmp)$/i.test(path);
 }
 
-async function collectSyncTasks(repoRoot, files) {
+async function collectSyncTasks(repoRoot, files, settings) {
 	const tasks = await Promise.all(files.map(async (file) => {
 		const filePath = resolve(repoRoot, file);
 		let content;
@@ -192,7 +193,12 @@ async function collectSyncTasks(repoRoot, files) {
 			}
 			throw error;
 		}
-		const binding = readBindingFromMarkdown(content);
+		const vaultRelativePath = relative(repoRoot, filePath).split(sep).join("/");
+		if (settings.disconnectedBindings?.[vaultRelativePath] === true) {
+			return null;
+		}
+		const persistedBinding = readPersistedBinding(settings, vaultRelativePath);
+		const binding = persistedBinding || readBindingFromMarkdown(content);
 		if (!binding) {
 			return null;
 		}
@@ -200,15 +206,30 @@ async function collectSyncTasks(repoRoot, files) {
 		return {
 			vaultRoot: repoRoot,
 			filePath,
-			repoRelativePath: file,
+			repoRelativePath: vaultRelativePath,
 			content,
 			binding,
+			canonicalToken: persistedBinding?.token || "",
 			doc: binding.token || binding.url,
 			stateKeys: getDocumentStateKeys([binding.token, binding.url])
 		};
 	}));
 
 	return tasks.filter(Boolean);
+}
+
+function readPersistedBinding(settings, path) {
+	const bindings = settings.documentBindings;
+	if (!isRecord(bindings) || !Object.hasOwn(bindings, path)) {
+		return null;
+	}
+	const record = bindings[path];
+	if (!isRecord(record)) {
+		return null;
+	}
+	const token = typeof record.token === "string" ? record.token.trim() : "";
+	const url = typeof record.url === "string" ? record.url.trim() : "";
+	return token || url ? { token, url } : null;
 }
 
 function groupTasksByDoc(tasks, syncState) {
@@ -224,6 +245,9 @@ function groupTasksByDoc(tasks, syncState) {
 }
 
 function resolveDocumentGroupKey(task, syncState) {
+	if (task.canonicalToken) {
+		return getDocumentStateKey(task.canonicalToken);
+	}
 	for (const key of task.stateKeys) {
 		const state = syncState.documents[key];
 		if (state?.doc) {
@@ -246,7 +270,7 @@ async function syncMarkdownTask(task, settings, syncState) {
 		});
 		const contentForLark = preparedContent.content;
 		const strategy = settings.syncStrategy || "auto";
-		let state = findDocumentState(syncState, task.stateKeys);
+		let state = findDocumentState(syncState, task.stateKeys, task.canonicalToken);
 		let syncDoc = state?.doc || task.doc;
 		if (strategy !== "overwrite" && shouldRefreshPreciseSyncState(state)) {
 			state = await tryBootstrapPreciseSyncState(settings, syncState, syncDoc, task.stateKeys, contentForLark) || state;
@@ -319,6 +343,15 @@ async function syncMarkdownTask(task, settings, syncState) {
 }
 
 async function unbindDeletedRemoteDocument(task, syncState) {
+	await writeSettingsUpdate((latestSettings) => {
+		const binding = readPersistedBinding(latestSettings, task.repoRelativePath);
+		if (!binding || binding.token !== task.binding.token || binding.url !== task.binding.url) {
+			return latestSettings;
+		}
+		const documentBindings = { ...latestSettings.documentBindings };
+		delete documentBindings[task.repoRelativePath];
+		return { ...latestSettings, documentBindings };
+	});
 	const unboundContent = removeLarkBindingFrontmatter(task.content);
 	await writeFile(task.filePath, unboundContent, "utf8");
 	for (const key of getDocumentStateKeys(task.stateKeys)) {
@@ -510,10 +543,10 @@ async function executeSkippedSyncPlanForTask(task, settings, syncState, doc, con
 class PrePushSyncError extends Error {
 }
 
-function findDocumentState(syncState, aliases) {
+function findDocumentState(syncState, aliases, canonicalDoc = "") {
 	for (const key of getDocumentStateKeys(aliases)) {
 		const state = syncState.documents[key];
-		if (state) {
+		if (state && (!canonicalDoc || getDocumentStateKey(state.doc || key) === getDocumentStateKey(canonicalDoc))) {
 			return state;
 		}
 	}
@@ -720,7 +753,7 @@ async function tryBootstrapPreciseSyncState(settings, syncState, doc, docs, expe
 		fetchLarkDocumentWithIds(settings, doc)
 	]);
 	const remoteDoc = remoteXml.doc || remoteMarkdown?.doc || doc;
-	const existingState = findDocumentState(syncState, [remoteDoc, doc, ...docs]);
+	const existingState = findDocumentState(syncState, [remoteDoc, doc, ...docs], remoteDoc);
 	if (existingState
 		&& existingState.revisionId !== undefined
 		&& existingState.revisionId === remoteXml.revisionId
@@ -851,6 +884,19 @@ async function readSettings(repoRoot) {
 }
 
 async function writeLarkCliVersionCheck(versionCheck) {
+	await writeSettingsUpdate((latestSettings) => ({
+		...latestSettings,
+		larkCliVersionCheck: versionCheck
+	}));
+}
+
+async function writeSettingsUpdate(update) {
+	const operation = settingsWriteQueue.then(() => writeSettingsUpdateOnce(update));
+	settingsWriteQueue = operation.catch(() => {});
+	await operation;
+}
+
+async function writeSettingsUpdateOnce(update) {
 	if (!settingsPath) {
 		return;
 	}
@@ -859,10 +905,11 @@ async function writeLarkCliVersionCheck(versionCheck) {
 	await mkdir(dirname(settingsPath), { recursive: true });
 	try {
 		const latestSettings = await readLatestSettingsForWrite();
-		await writeFile(tempPath, JSON.stringify({
-			...latestSettings,
-			larkCliVersionCheck: versionCheck
-		}, null, 2), "utf8");
+		const nextSettings = update(latestSettings);
+		if (nextSettings === latestSettings) {
+			return;
+		}
+		await writeFile(tempPath, JSON.stringify(nextSettings, null, 2), "utf8");
 		await rename(tempPath, settingsPath);
 	} catch (error) {
 		await rm(tempPath, { force: true });
@@ -957,6 +1004,9 @@ async function runLarkCliQueued(settings, args, cwd) {
 	try {
 		return await runLarkCliWithRetry(settings, args, cwd);
 	} catch (error) {
+		if (error instanceof LarkCliApiError) {
+			throw error;
+		}
 		throw new Error(formatCommandError(error));
 	} finally {
 		larkCliActiveRequestCount = Math.max(0, larkCliActiveRequestCount - 1);
@@ -999,7 +1049,7 @@ async function runLarkCliOnce(settings, args, cwd) {
 	});
 	const result = parseLarkCommandResult(stdout);
 	if (!result.ok) {
-		throw new Error(formatLarkError(result));
+		throw new LarkCliApiError(result);
 	}
 	return result;
 }
@@ -1086,10 +1136,18 @@ function isExecutableLaunchError(error) {
 	return error.code === "ENOENT" || error.code === "EACCES";
 }
 
+class LarkCliApiError extends Error {
+	constructor(result) {
+		super(formatLarkError(result));
+		this.apiCode = result.error?.code;
+		this.apiMessage = result.error?.message || "";
+	}
+}
+
 function isRemoteDocumentDeletedApiError(error) {
-	const message = error instanceof Error ? error.message : String(error);
-	return message.includes("3380003")
-		|| message.toLowerCase().includes("document page has been deleted");
+	return error instanceof LarkCliApiError
+		&& (String(error.apiCode) === "3380003"
+			|| /document page has been deleted/i.test(error.apiMessage));
 }
 
 function isFileNotFoundError(error) {

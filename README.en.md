@@ -9,7 +9,10 @@ It is useful when Obsidian is your local source of truth and Feishu/Lark is wher
 ## Features
 
 - **Single-note sync**: publish or update the current Markdown note as a Feishu/Lark Docx document.
-- **Folder sync**: right-click a folder and sync all Markdown files while preserving the folder hierarchy.
+- **Folder sync**: right-click a folder and sync all Markdown and PDF files while preserving the folder hierarchy.
+- **Published links manager**: open, copy, and edit remote bindings from context menus; search all recorded publications from the command palette or settings.
+- **PDF uploads**: preserve folder hierarchy, skip unchanged PDFs, and overwrite changed PDFs using the same remote file token.
+- **Independent bindings**: plugin data stores bindings even with frontmatter disabled.
 - **Block-level incremental sync**: update only changed blocks for small edits, without rewriting the whole document, so Feishu/Lark history can be preserved.
 - **Full overwrite sync**: clear and rewrite the remote document when the local Markdown file should be the complete source of truth.
 - **Automatic sync strategy**: use the automatic strategy by default; small changes are synced incrementally, while large or complex changes fall back to full overwrite when safe incremental sync is not possible.
@@ -77,7 +80,7 @@ Open a Markdown file, then click the ribbon icon or use the file context menu:
 
 Sync is one-way from Obsidian to Feishu/Lark. The local Markdown note is the source.
 
-Default binding example:
+Bindings are stored in plugin data. With “Write binding to frontmatter” enabled, the following optional field is also written:
 
 ```yaml
 ---
@@ -100,7 +103,7 @@ PNG, JPEG/JPG, GIF, WebP, and BMP are supported. Images must stay inside the cur
 
 ### Folder Sync
 
-Right-click a folder and choose `Lark: Sync folder to Feishu/Lark`. The plugin creates the matching remote hierarchy, syncs Markdown files, and rewrites internal links in the uploaded content.
+Right-click a folder and choose `Lark: Sync folder to Feishu/Lark`. The plugin creates the matching remote hierarchy, syncs Markdown and PDF files, and rewrites Markdown internal links in the uploaded content.
 
 Supported link forms:
 
@@ -112,9 +115,25 @@ Detailed design: 02-database.md
 
 Local notes remain unchanged.
 
+### Published Links Manager
+
+File and folder context menus provide open, copy, and manage-binding actions. Folder menus also open publications scoped to that folder. Use `Manage published links` from the command palette or settings to search all recorded Markdown, PDF, and folder bindings, open local files, sync, or disconnect a local association.
+
+The editor checks the remote resource type and access before saving. Management actions change plugin data only; they do not edit notes or frontmatter, or move/delete remote content.
+
+Older versions did not record document bindings with frontmatter disabled. `Recover existing bindings` matches Markdown documents uniquely inside associated remote folders. Folder sync performs the same check before creating a document. Ambiguous local or remote titles require an explicit existing URL. Recovery only reads remote folders; clean up existing remote duplicates manually in Feishu/Lark.
+
+### PDF Files
+
+Folder sync uploads PDFs as native files inside the matching Drive folders or wiki nodes. A PDF context menu can also upload one file; a blank default target uploads a standalone PDF to the Drive root. PDFs are not converted to Docx or embedded into Markdown notes.
+
+Persistent bindings and content hashes skip unchanged PDFs. Changes overwrite the same file token and preserve its link. Local renames migrate the association while preserving the remote name. PDFs update through manual or folder sync; save-triggered sync and Git hooks still cover Markdown and referenced images only.
+
+An upload timeout keeps a pending record and stops blind retries. Reconcile the existing remote file through the binding editor before retrying. If no remote file was created, disconnect the pending local record and upload again.
+
 ### Auto Sync
 
-Auto sync only handles already bound documents. For first-time use, run `Lark: Sync to Feishu/Lark` in Obsidian to publish the document and write the `lark_doc_url` binding; subsequent save-after-sync or Git hook sync can then find and update that file.
+Auto sync only handles already bound documents. For first-time use, run `Lark: Sync to Feishu/Lark` in Obsidian to publish the document and save its binding; frontmatter is optional. Subsequent save-after-sync or Git hook sync can then find and update that file.
 
 #### Trigger Modes
 
@@ -140,7 +159,7 @@ For Git hook mode, click `Install hook` in the `Git Hook` settings section. If s
 
 - `Default target`: Wiki URL, wiki node token, folder token, or blank for the personal library.
 - `Title source`: use the first Markdown heading or the file name.
-- `Write binding to frontmatter`: store the remote document URL in note frontmatter.
+- `Write binding to frontmatter`: additionally store the remote URL in note frontmatter; disabling this leaves the durable plugin-data binding available.
 - `Sync strategy`: use automatic strategy by default; small changes use incremental sync, while large, complex, or unsafe incremental changes automatically fall back to full overwrite.
 - `Sync state cache`: controls how many document states are kept for safe precise sync.
 
@@ -151,6 +170,8 @@ The plugin splits Markdown into top-level content blocks and records the mapping
 This block-level sync does not clear and rewrite the whole document, so Feishu/Lark can keep the corresponding edit history, recent update records, and collaboration context. The remote document is rewritten only when you choose `Overwrite to Feishu/Lark`, or when the automatic strategy decides that the change is too large, too complex, or unsafe for incremental sync.
 
 ![Feishu/Lark history preservation](./docs/images/lark-history.png)
+
+Publication bindings and pending attempts are stored in `.obsidian/plugins/feishu-lark-cli-sync/data.json` and are independent of sync-state cache trimming.
 
 Safe precise sync state is stored at:
 

@@ -1,4 +1,4 @@
-import { addIcon, FileSystemAdapter, Menu, Notice, Plugin, PluginSettingTab, Setting, TFile } from "obsidian";
+import { addIcon, FileSystemAdapter, Menu, Notice, Plugin, PluginSettingTab, Setting, TFile, TFolder } from "obsidian";
 import { execFile } from "child_process";
 import { constants } from "fs";
 import { access, chmod, copyFile, mkdir, readFile, rename, stat } from "fs/promises";
@@ -89,12 +89,22 @@ import {
 	materializeLocalImages as materializePreparedLocalImages
 } from "./media-sync-orchestrator";
 
+import { PublishedLinkBindingModal, PublishedLinkEntry, PublishedLinksHost, PublishedLinksModal } from "./published-links";
+import { createPdfBindingKey, PdfBinding, PdfPublishParent, publishPdf } from "./pdf-publish";
+import { SyncQueue } from "./sync-queue";
+
 const execFileAsync = promisify(execFile);
 
 const DEFAULT_SETTINGS: LarkCliSyncSettings = {
 	language: "zh-CN",
 	larkCliPath: "lark-cli",
 	targetTokenOrUrl: "",
+	documentBindings: {},
+	pendingDocumentCreates: {},
+	pendingFolderCreates: {},
+	disconnectedBindings: {},
+	disconnectedFolders: {},
+	pdfBindings: {},
 	folderBindings: {},
 	publishedFolders: {},
 	titleSource: "file-name",
@@ -154,6 +164,12 @@ interface LarkCliSyncSettings {
 	larkCliPath: string;
 	larkCliVersionCheck?: LarkCliVersionCheck;
 	targetTokenOrUrl: string;
+	documentBindings: Record<string, BoundLarkDocument>;
+	pendingDocumentCreates: Record<string, { title: string; startedAt: string }>;
+	pendingFolderCreates: Record<string, string>;
+	disconnectedBindings: Record<string, boolean>;
+	disconnectedFolders: Record<string, boolean>;
+	pdfBindings: Record<string, PdfBinding>;
 	folderBindings: Record<string, BoundLarkDocument>;
 	publishedFolders: Record<string, PublishedFolderBinding>;
 	titleSource: TitleSource;
@@ -173,6 +189,7 @@ interface LarkCliVersionCheck {
 interface BoundLarkDocument {
 	token: string;
 	url: string;
+	nodeToken?: string;
 	containerToken?: string;
 	containerKind?: RemoteParentKind;
 	remoteParentPath?: string;
@@ -200,12 +217,26 @@ interface LarkCommandNode {
 	node_token?: string;
 	obj_token?: string;
 	url?: string;
+	space_id?: string;
+	parent_node_token?: string;
+	obj_type?: string;
+	title?: string;
 }
 
 interface LarkCommandResult {
 	ok: boolean;
 	data?: {
 		token?: string;
+		space_id?: string;
+		parent_node_token?: string;
+		obj_type?: string;
+		nodes?: LarkCommandNode[];
+		files?: Array<{ token: string; type: string; name: string; url?: string }>;
+		has_more?: boolean;
+		page_token?: string;
+		next_page_token?: string;
+		type?: string;
+		file_token?: string;
 		folder_token?: string;
 		comment_id?: string;
 		reply_id?: string;
@@ -218,6 +249,8 @@ interface LarkCommandResult {
 		wiki_node?: {
 			node_token?: string;
 			obj_token?: string;
+			obj_type?: string;
+			parent_node_token?: string;
 		};
 	};
 	error?: {
@@ -344,6 +377,12 @@ class RemoteStateRefreshError extends LocalizedSyncError {
 
 const MESSAGES = {
 	"zh-CN": {
+		menuManagePublishedLinks: "管理已发布链接",
+		menuOpenPublishedLink: "打开飞书链接",
+		menuCopyPublishedLink: "复制飞书链接",
+		menuEditPublishedLink: "管理飞书绑定",
+		invalidPublishedLink: "请输入对应的飞书 / Lark 文档、PDF 或文件夹 URL。",
+		menuCopiedPublishedLink: "已复制飞书链接。",
 		commandSyncCurrentNote: "同步到飞书",
 		commandOverwriteCurrentNote: "覆盖同步到飞书",
 		menuSyncToLark: "Lark: 同步到飞书",
@@ -354,11 +393,11 @@ const MESSAGES = {
 		noticeSyncingToLark: "正在同步到飞书...",
 		noticeOverwriteSyncingToLark: "正在覆盖同步到飞书...",
 		noticePublishingFolderToLark: "正在发布目录到飞书...",
-		noticeNoMarkdownFilesInFolder: "该目录下没有 Markdown 文件。",
+		noticeNoMarkdownFilesInFolder: "该目录下没有 Markdown 或 PDF 文件。",
 		noticePublishedToLark: "已发布到飞书",
 		noticeSyncedToLark: "已同步到飞书",
 		noticeOverwriteSyncedToLark: "已覆盖同步到飞书",
-		noticePublishedFolderToLark: "已发布 {count} 篇笔记到飞书。",
+		noticePublishedFolderToLark: "已同步 {count} 个 Markdown / PDF 文件到飞书。",
 		noticeSyncFailed: "飞书同步失败：{message}",
 		noticeRemoteDeletedRecreate: "远端文档已删除，正在重新创建...",
 		noticeRemoteDeletedUnbound: "飞书文档远端已删除，已自动解绑：{path}\n如需重新发布，请再次执行“同步到飞书”。",
@@ -389,7 +428,7 @@ const MESSAGES = {
 		titleSourceFirstHeading: "第一个标题",
 		titleSourceFileName: "文件名",
 		settingWriteBindingName: "写入 frontmatter 绑定信息",
-		settingWriteBindingDesc: "发布后把飞书文档 URL 保存到笔记 frontmatter。",
+		settingWriteBindingDesc: "发布后额外写入笔记 frontmatter；关闭后，绑定仍保存在插件数据中。",
 		settingOpenAfterSyncName: "同步后打开文档",
 		settingOpenAfterSyncDesc: "发布或同步成功后，在浏览器中打开飞书文档。",
 		settingAutoSyncModeName: "自动同步方式",
@@ -417,6 +456,12 @@ const MESSAGES = {
 		installPrePushHookButton: "安装 hook"
 	},
 	en: {
+		menuManagePublishedLinks: "Manage published links",
+		menuOpenPublishedLink: "Open Feishu/Lark link",
+		menuCopyPublishedLink: "Copy Feishu/Lark link",
+		menuEditPublishedLink: "Manage Feishu/Lark binding",
+		invalidPublishedLink: "Enter the matching Feishu/Lark document, PDF, or folder URL.",
+		menuCopiedPublishedLink: "Feishu/Lark link copied.",
 		commandSyncCurrentNote: "Sync to Feishu/Lark",
 		commandOverwriteCurrentNote: "Overwrite sync to Feishu/Lark",
 		menuSyncToLark: "Lark: Sync to Feishu/Lark",
@@ -427,11 +472,11 @@ const MESSAGES = {
 		noticeSyncingToLark: "Syncing to Lark...",
 		noticeOverwriteSyncingToLark: "Overwriting to Lark...",
 		noticePublishingFolderToLark: "Publishing folder to Lark...",
-		noticeNoMarkdownFilesInFolder: "No Markdown files found in this folder.",
+		noticeNoMarkdownFilesInFolder: "No Markdown or PDF files found in this folder.",
 		noticePublishedToLark: "Published to Feishu/Lark",
 		noticeSyncedToLark: "Synced to Feishu/Lark",
 		noticeOverwriteSyncedToLark: "Overwritten to Feishu/Lark",
-		noticePublishedFolderToLark: "Published {count} notes to Feishu/Lark.",
+		noticePublishedFolderToLark: "Synced {count} Markdown/PDF files to Feishu/Lark.",
 		noticeSyncFailed: "Feishu/Lark sync failed: {message}",
 		noticeRemoteDeletedRecreate: "Remote document was deleted. Creating a new document...",
 		noticeRemoteDeletedUnbound: "The remote Feishu/Lark document was deleted and has been unbound: {path}\nRun Sync to Lark again to publish a new document.",
@@ -462,7 +507,7 @@ const MESSAGES = {
 		titleSourceFirstHeading: "First heading",
 		titleSourceFileName: "File name",
 		settingWriteBindingName: "Write binding to frontmatter",
-		settingWriteBindingDesc: "Store the Lark document URL in note frontmatter.",
+		settingWriteBindingDesc: "Additionally store the URL in note frontmatter. Bindings remain in plugin data when disabled.",
 		settingOpenAfterSyncName: "Open after sync",
 		settingOpenAfterSyncDesc: "Open the Lark document in your browser after publish or sync succeeds.",
 		settingAutoSyncModeName: "Auto sync mode",
@@ -516,6 +561,9 @@ export default class LarkCliSyncPlugin extends Plugin {
 	private larkCliRequestQueue: Promise<void> = Promise.resolve();
 	private larkCliActiveRequestCount = 0;
 	private lastLarkCliRequestAt = 0;
+	private operationQueue = new SyncQueue();
+	private settingsWriteQueue = new SyncQueue();
+	private hasUnsavedSettings = false;
 	private syncState: LarkSyncStateFile = createEmptySyncStateFile();
 	private readonly syncStateChangedKeys = new Set<string>();
 	private readonly syncStateRemovedKeys = new Set<string>();
@@ -550,6 +598,21 @@ export default class LarkCliSyncPlugin extends Plugin {
 			}
 		});
 
+		this.addCommand({ id: "manage-published-links", name: this.t("menuManagePublishedLinks"),
+			callback: () => this.openPublishedLinks() });
+		this.addCommand({ id: "open-current-published-link", name: this.t("menuOpenPublishedLink"),
+			checkCallback: (checking) => {
+				const file = this.app.workspace.getActiveFile();
+				const url = file ? this.getPublishedEntry(file.path, file.extension.toLowerCase() === "pdf" ? "pdf" : "markdown")?.url : "";
+				if (!url) return false;
+				if (!checking) window.open(url);
+				return true;
+			} });
+		this.registerEvent(this.app.vault.on("rename", (file, oldPath) => {
+			void (this.operationQueue ??= new SyncQueue()).run(() => this.moveLocalBindings(oldPath, file.path, file instanceof TFolder))
+				.catch((error: unknown) => new Notice(String(error)));
+		}));
+
 		this.addRibbonIcon(LARK_RIBBON_ICON_ID, this.t("ribbonSyncCurrentNote"), () => {
 			void this.syncCurrentNote();
 		});
@@ -568,7 +631,18 @@ export default class LarkCliSyncPlugin extends Plugin {
 				});
 			}
 
-			if ("children" in file) {
+			if (file instanceof TFile && file.extension === "md") {
+				this.addPublishedLinkMenu(menu, file.path, "markdown");
+			}
+
+			if (file instanceof TFile && file.extension.toLowerCase() === "pdf") {
+				this.addPublishedLinkMenu(menu, file.path, "pdf");
+				menu.addItem((item) => item.setTitle(this.t("menuSyncToLark")).setIcon("upload")
+					.onClick(() => { void this.runWithNotice(this.t("noticeSyncingToLark"), () => this.syncPdfFile(file)); }));
+			}
+
+			if (file instanceof TFolder) {
+				this.addPublishedLinkMenu(menu, file.path, "folder");
 				menu.addItem((item) => {
 					item.setTitle(this.t("menuPublishFolderToLark")).setIcon("folder-up").onClick(() => {
 						void this.publishFolder(file.path);
@@ -594,6 +668,12 @@ export default class LarkCliSyncPlugin extends Plugin {
 				savedSettings?.stateCacheRetainLimit,
 				DEFAULT_STATE_CACHE_RETAIN_LIMIT
 			),
+			documentBindings: { ...(savedSettings?.documentBindings || {}) },
+			pendingDocumentCreates: { ...(savedSettings?.pendingDocumentCreates || {}) },
+			pendingFolderCreates: { ...(savedSettings?.pendingFolderCreates || {}) },
+			disconnectedBindings: { ...(savedSettings?.disconnectedBindings || {}) },
+			disconnectedFolders: { ...(savedSettings?.disconnectedFolders || {}) },
+			pdfBindings: { ...(savedSettings?.pdfBindings || {}) },
 			folderBindings: {
 				...DEFAULT_SETTINGS.folderBindings,
 				...(savedSettings?.folderBindings || {})
@@ -607,11 +687,19 @@ export default class LarkCliSyncPlugin extends Plugin {
 
 	async saveSettings(): Promise<void> {
 		this.clearLarkCliCommandCache();
-		await this.saveData(this.settings);
+		await this.saveSettingsWithoutClearingCommandCache();
 	}
 
 	private async saveSettingsWithoutClearingCommandCache(): Promise<void> {
-		await this.saveData(this.settings);
+		await (this.settingsWriteQueue ??= new SyncQueue()).run(async () => {
+			try {
+				await this.saveData(JSON.parse(JSON.stringify(this.settings)));
+				this.hasUnsavedSettings = false;
+			} catch (error) {
+				this.hasUnsavedSettings = true;
+				throw error;
+			}
+		});
 	}
 
 	private registerSaveAutoSync(): void {
@@ -717,6 +805,11 @@ export default class LarkCliSyncPlugin extends Plugin {
 	}
 
 	private async syncFileInternal(file: TFile, options: SyncFileOptions): Promise<BoundLarkDocument | null> {
+		return await (this.operationQueue ??= new SyncQueue()).run(() => this.syncFileUnlocked(file, options));
+	}
+
+	private async syncFileUnlocked(file: TFile, options: SyncFileOptions): Promise<BoundLarkDocument | null> {
+		if (this.hasUnsavedSettings) await this.saveSettingsWithoutClearingCommandCache();
 		const binding = this.getBinding(file);
 		if (!binding) {
 			if (!options.allowCreate) {
@@ -725,6 +818,17 @@ export default class LarkCliSyncPlugin extends Plugin {
 
 			const preparedContent = await this.readNoteForLark(file);
 			const publishedFolder = await this.resolvePublishedFolderParentForFile(file);
+			if (publishedFolder) {
+				const siblings = this.app.vault.getMarkdownFiles().filter((candidate) => this.parentPath(candidate.path) === this.parentPath(file.path));
+				const prepared = await Promise.all(siblings.map(async (candidate): Promise<FolderPreparedFile> => ({
+					file: candidate, binding: this.getBinding(candidate), remoteParentPath: publishedFolder.remoteParentPath,
+					preparedContent: candidate.path === file.path ? preparedContent : {
+						content: prepareNoteContentForLark(candidate, removeLarkBinding(await this.app.vault.read(candidate)), this.settings.titleSource), images: []
+					}
+				})));
+				await this.recoverPreparedBindings(prepared, new Map([[publishedFolder.remoteParentPath, publishedFolder.parent]]), true, file.path);
+				if (this.getBinding(file)) return await this.syncFileUnlocked(file, options);
+			}
 			const persistCreatedBinding = options.updateFrontmatter
 				? async (createdBinding: BoundLarkDocument): Promise<void> => {
 					await this.writeBinding(file, createdBinding);
@@ -1293,50 +1397,66 @@ exec "${nodePath}" "${scriptPath}" "$@"
 	}
 
 	private async publishFolder(folderPath: string): Promise<void> {
-		await this.runWithNotice(this.t("noticePublishingFolderToLark"), async () => {
-			await this.withDeferredLarkSyncStateSave(async () => {
-				const files = this.collectMarkdownFiles(folderPath);
-				if (files.length === 0) {
-					new Notice(this.t("noticeNoMarkdownFilesInFolder"));
-					return;
-				}
+		await this.runWithNotice(this.t("noticePublishingFolderToLark"), () => this.publishFolderInternal(folderPath));
+	}
 
-				const entries: FolderPublishEntry[] = [];
-				const folderRoot = this.getSelectedFolderName(folderPath);
-				const rootParent = await this.resolveRemoteRootParent();
-				const preparedFiles = await Promise.all(files.map(async (file) => {
-					const preparedContent = await this.readNoteForLark(file);
-					const binding = this.getBinding(file);
-					const documentParentPath = this.getRemoteParentPath(folderPath, file, folderRoot);
-					return {
-						file,
-						preparedContent,
-						binding,
-						remoteParentPath: documentParentPath
-					};
-				}));
-				const parentsByPath = await this.resolveFolderParents(rootParent, preparedFiles);
-				const indexedPreparedFiles = preparedFiles.map((preparedFile, index) => {
-					return {
-						preparedFile,
-						index
-					};
-				});
+	private async publishFolderInternal(folderPath: string): Promise<void> {
+		await (this.operationQueue ??= new SyncQueue()).run(() => this.withDeferredLarkSyncStateSave(async () => {
+			if (this.hasUnsavedSettings) await this.saveSettingsWithoutClearingCommandCache();
+			delete this.settings.disconnectedFolders?.[folderPath];
+			const files = this.collectMarkdownFiles(folderPath).filter((file) => !this.isFolderDisconnected(file.path));
+			const pdfFiles = this.app.vault.getFiles().filter((file) => file.extension.toLowerCase() === "pdf"
+				&& this.isPathWithin(file.path, folderPath) && !this.isFolderDisconnected(file.path));
+			if (files.length + pdfFiles.length === 0) {
+				new Notice(this.t("noticeNoMarkdownFilesInFolder"));
+				return;
+			}
 
-				const preparedFileGroups = this.groupPreparedFilesByDocument(indexedPreparedFiles);
-				await this.runWithConcurrency(preparedFileGroups, FOLDER_SYNC_PARALLEL_LIMIT, async (preparedFileGroup) => {
-					for (const item of preparedFileGroup) {
-						await this.prepareFolderEntry(item, entries, folderRoot, rootParent, parentsByPath);
-					}
-				});
-
-				await this.syncFolderEntries(folderPath, folderRoot, entries);
-				this.savePublishedFolderBinding(folderPath, rootParent, folderRoot);
-				await this.saveSettings();
-
-				new Notice(this.t("noticePublishedFolderToLark", { count: String(entries.length) }), 8000);
+			const entries: FolderPublishEntry[] = [];
+			const folderRoot = this.settings.publishedFolders[this.normalizeLinkPath(folderPath)]?.remoteRoot
+				?? this.getSelectedFolderName(folderPath);
+			const rootParent = this.settings.publishedFolders[this.normalizeLinkPath(folderPath)]?.rootParent
+				|| await this.resolveRemoteRootParent();
+			this.savePublishedFolderBinding(folderPath, rootParent, folderRoot);
+			await this.saveSettingsWithoutClearingCommandCache();
+			const preparedFiles = await Promise.all(files.map(async (file) => {
+				const preparedContent = await this.readNoteForLark(file);
+				const binding = this.getBinding(file);
+				const documentParentPath = this.getRemoteParentPath(folderPath, file, folderRoot);
+				return {
+					file,
+					preparedContent,
+					binding,
+					remoteParentPath: documentParentPath
+				};
+			}));
+			const parentsByPath = await this.resolveFolderParents(rootParent, preparedFiles);
+			await this.recoverPreparedBindings(preparedFiles, parentsByPath, true);
+			const indexedPreparedFiles = preparedFiles.map((preparedFile, index) => {
+				return {
+					preparedFile,
+					index
+				};
 			});
-		});
+
+			const preparedFileGroups = this.groupPreparedFilesByDocument(indexedPreparedFiles);
+			await this.runWithConcurrency(preparedFileGroups, FOLDER_SYNC_PARALLEL_LIMIT, async (preparedFileGroup) => {
+				for (const item of preparedFileGroup) {
+					await this.prepareFolderEntry(item, entries, folderRoot, rootParent, parentsByPath);
+				}
+			});
+
+			for (const file of pdfFiles) {
+				const remotePath = this.getRemoteParentPath(folderPath, file, folderRoot);
+				const { parent } = await this.ensureRemoteFolderPath(rootParent, remotePath);
+				await this.syncPdfFileUnlocked(file, parent);
+			}
+			await this.syncFolderEntries(folderPath, folderRoot, entries);
+			this.savePublishedFolderBinding(folderPath, rootParent, folderRoot);
+			await this.saveSettings();
+
+			new Notice(this.t("noticePublishedFolderToLark", { count: String(entries.length + pdfFiles.length) }), 8000);
+		}));
 	}
 
 	private async resolveFolderParents(
@@ -1577,7 +1697,7 @@ exec "${nodePath}" "${scriptPath}" "$@"
 
 	private collectMarkdownFiles(folderPath: string): TFile[] {
 		return this.app.vault.getMarkdownFiles()
-			.filter((file) => file.path === folderPath || file.path.startsWith(`${folderPath}/`))
+			.filter((file) => this.isPathWithin(file.path, folderPath))
 			.sort((a, b) => a.path.localeCompare(b.path));
 	}
 
@@ -1605,7 +1725,12 @@ exec "${nodePath}" "${scriptPath}" "$@"
 	}
 
 	private getBinding(file: TFile): BoundLarkDocument | null {
-		const cache = this.app.metadataCache.getFileCache(file);
+		if (this.settings.disconnectedBindings?.[file.path]) return null;
+		const savedBinding = this.settings.documentBindings?.[file.path];
+		if (savedBinding?.token || savedBinding?.url) {
+			return savedBinding;
+		}
+		const cache = this.app.metadataCache?.getFileCache(file);
 		const frontmatter = cache?.frontmatter;
 		if (!frontmatter) {
 			return null;
@@ -1651,6 +1776,14 @@ exec "${nodePath}" "${scriptPath}" "$@"
 				args.push("--parent-position", "my_library");
 			}
 
+			if (this.settings.pendingDocumentCreates?.[file.path]) {
+				throw new LocalizedSyncError(this.settings.language === "en"
+					? "A previous document creation has an uncertain result. Bind its existing URL or disconnect the pending local record before publishing again."
+					: "上次创建文档的结果尚未确认。请管理绑定并指定已有链接，或断开待确认的本地记录后再发布。");
+			}
+			(this.settings.pendingDocumentCreates ??= {})[file.path] = { title, startedAt: new Date().toISOString() };
+			try { await this.saveSettingsWithoutClearingCommandCache(); }
+			catch (error) { delete this.settings.pendingDocumentCreates[file.path]; throw error; }
 			const result = await this.runLarkCli(args, { cwd: tempFile.directory });
 			const commandDocument = result.data?.["document"];
 			const token = commandDocument?.document_id;
@@ -1664,6 +1797,10 @@ exec "${nodePath}" "${scriptPath}" "$@"
 				token,
 				url
 			};
+			// Persist immediately: later content/image/state failures must reuse this document.
+			await this.rememberDocumentBinding(file, this.withRemoteParentMetadata(
+				binding, file.parent?.name || "", this.parentPath(file.path), remoteParent
+			));
 			await onCreated?.(binding);
 			if (publishPlan.staged) {
 				await this.appendStagedDocumentBatches(token || url, publishPlan.batches);
@@ -1722,7 +1859,7 @@ exec "${nodePath}" "${scriptPath}" "$@"
 				return resumedDocument;
 			}
 		}
-		let state = this.findDocumentState([doc, ...(context.stateKeys || [])]);
+		let state = this.findDocumentState([doc, ...(context.stateKeys || [])], doc);
 		let syncDoc = state?.doc || doc;
 		if (strategy !== "overwrite" && this.shouldRefreshPreciseSyncState(state)) {
 			state = await this.tryBootstrapPreciseSyncState(syncDoc, context.stateKeys || [], content) || state;
@@ -1766,7 +1903,7 @@ exec "${nodePath}" "${scriptPath}" "$@"
 		preparedContent: PreparedNoteContent,
 		context: { mode: SyncMode; path: string; stateKeys?: string[] }
 	): Promise<LarkDocumentUpdateResult | null> {
-		const state = this.findDocumentState([doc, ...(context.stateKeys || [])]);
+		const state = this.findDocumentState([doc, ...(context.stateKeys || [])], doc);
 		if (state && isDocumentStateBlockMappingAcceptable(state)) {
 			return null;
 		}
@@ -1827,10 +1964,11 @@ exec "${nodePath}" "${scriptPath}" "$@"
 		return !state || !isDocumentStateBlockMappingAcceptable(state);
 	}
 
-	private findDocumentState(docs: string[]): LarkSyncStateFile["documents"][string] | undefined {
+	private findDocumentState(docs: string[], canonicalDoc = ""): LarkSyncStateFile["documents"][string] | undefined {
 		for (const key of getDocumentStateKeys(docs)) {
 			const state = this.syncState.documents[key];
-			if (state) {
+			if (state && (!canonicalDoc || canonicalDoc.includes("/wiki/")
+				|| getDocumentStateKey(state.doc) === getDocumentStateKey(canonicalDoc))) {
 				return state;
 			}
 		}
@@ -2469,7 +2607,7 @@ exec "${nodePath}" "${scriptPath}" "$@"
 			this.fetchLarkDocumentWithIds(doc)
 		]);
 		const remoteDoc = remoteXml.doc || remoteMarkdown?.doc || doc;
-		const existingState = this.findDocumentState([remoteDoc, doc, ...stateKeys]);
+		const existingState = this.findDocumentState([remoteDoc, doc, ...stateKeys], remoteDoc);
 		if (existingState
 			&& existingState.revisionId !== undefined
 			&& existingState.revisionId === remoteXml.revisionId
@@ -2648,6 +2786,7 @@ exec "${nodePath}" "${scriptPath}" "$@"
 			});
 
 			return {
+				...binding,
 				token: result.token || binding.token,
 				url: result.url || binding.url
 			};
@@ -2726,7 +2865,10 @@ exec "${nodePath}" "${scriptPath}" "$@"
 		}
 
 		if (!updateFrontmatter) {
-			return false;
+			return !previous || previous.containerToken !== next.containerToken
+				|| previous.containerKind !== next.containerKind
+				|| previous.remoteRoot !== next.remoteRoot
+				|| previous.remoteParentPath !== next.remoteParentPath;
 		}
 
 		return !previous
@@ -2793,6 +2935,7 @@ exec "${nodePath}" "${scriptPath}" "$@"
 	}
 
 	private findExplicitPublishedFolderForFile(file: TFile): PublishedFolderResolution | null {
+		if (this.isFolderDisconnected(file.path)) return null;
 		let folderPath = this.parentPath(file.path);
 		while (folderPath) {
 			const normalizedFolderPath = this.normalizeLinkPath(folderPath);
@@ -2847,6 +2990,7 @@ exec "${nodePath}" "${scriptPath}" "$@"
 	}
 
 	private findPublishedFolderForFile(file: TFile): PublishedFolderResolution | null {
+		if (this.isFolderDisconnected(file.path)) return null;
 		let folderPath = this.parentPath(file.path);
 		while (folderPath) {
 			const normalizedFolderPath = this.normalizeLinkPath(folderPath);
@@ -2940,8 +3084,18 @@ exec "${nodePath}" "${scriptPath}" "$@"
 				continue;
 			}
 
+			if (this.settings.pendingFolderCreates?.[bindingKey]) {
+				throw new LocalizedSyncError(this.settings.language === "en"
+					? `Folder creation is unconfirmed: ${partialPath}. Manage its existing remote binding before retrying.`
+					: `目录创建结果待确认：${partialPath}。请先管理对应目录的远端绑定。`);
+			}
+			(this.settings.pendingFolderCreates ??= {})[bindingKey] = segments[index] || "Untitled";
+			try { await this.saveSettingsWithoutClearingCommandCache(); }
+			catch (error) { delete this.settings.pendingFolderCreates[bindingKey]; throw error; }
 			const folderBinding = await this.createRemoteFolderPage(segments[index] || "Untitled", parent);
+			delete this.settings.pendingFolderCreates[bindingKey];
 			this.settings.folderBindings[bindingKey] = folderBinding;
+			await this.saveSettingsWithoutClearingCommandCache();
 			createdBinding = true;
 			parent = {
 				token: folderBinding.token,
@@ -3060,6 +3214,13 @@ exec "${nodePath}" "${scriptPath}" "$@"
 	}
 
 	private getFolderBindingKey(rootParent: RemoteParent, folderPath: string): string {
+		// Existing associations remain valid when the default target setting changes.
+		const existingKey = Object.keys(this.settings.folderBindings).find((key) => {
+			const root = this.getFolderBindingRootParent(key);
+			return root.kind === rootParent.kind && root.token === rootParent.token
+				&& this.getFolderBindingPath(key) === this.normalizeLinkPath(folderPath);
+		});
+		if (existingKey) return existingKey;
 		const target = this.settings.targetTokenOrUrl.trim() || "my_library";
 		return `${target}|${rootParent.kind}|${rootParent.token}|${this.normalizeLinkPath(folderPath)}`;
 	}
@@ -3164,7 +3325,9 @@ exec "${nodePath}" "${scriptPath}" "$@"
 			try {
 				return await this.runLarkCliOnce(args, options);
 			} catch (error) {
-				if (!this.isLarkRateLimitError(error) || attempt >= LARK_CLI_RATE_LIMIT_RETRY_DELAYS_MS.length) {
+				// An upload may already have committed; retry only after reconciling its token.
+				if (["+upload", "+create", "+node-create", "+create-folder"].includes(args[1] || "")
+					|| !this.isLarkRateLimitError(error) || attempt >= LARK_CLI_RATE_LIMIT_RETRY_DELAYS_MS.length) {
 					throw error;
 				}
 
@@ -3481,10 +3644,7 @@ exec "${nodePath}" "${scriptPath}" "$@"
 	private isRemoteDocumentDeletedError(error: unknown): boolean {
 		const message = error instanceof Error ? error.message : String(error);
 		return message.includes("3380003")
-			|| message.toLowerCase().includes("document page has been deleted")
-			|| message.toLowerCase().includes("no longer be edited")
-			|| message.toLowerCase().includes("not exist")
-			|| message.toLowerCase().includes("not found");
+			|| message.toLowerCase().includes("document page has been deleted");
 	}
 
 	private isRemoteDocumentDeletedApiError(error: unknown): boolean {
@@ -3672,6 +3832,13 @@ exec "${nodePath}" "${scriptPath}" "$@"
 		return name.replace(/[\\/:*?"<>|]/g, "-").trim() || "note";
 	}
 
+	private async rememberDocumentBinding(file: TFile, binding: BoundLarkDocument): Promise<void> {
+		delete this.settings.disconnectedBindings?.[file.path];
+		delete this.settings.pendingDocumentCreates?.[file.path];
+		(this.settings.documentBindings ??= {})[file.path] = { ...binding };
+		await this.saveSettingsWithoutClearingCommandCache();
+	}
+
 	private async writeBinding(file: TFile, binding: BoundLarkDocument): Promise<void> {
 		const previousBinding = this.getBinding(file);
 		if (previousBinding && this.hasBindingChanged(previousBinding, binding)) {
@@ -3679,6 +3846,10 @@ exec "${nodePath}" "${scriptPath}" "$@"
 			await this.saveLarkSyncState();
 		}
 
+		await this.rememberDocumentBinding(file, binding);
+		if (!this.settings.updateFrontmatter) {
+			return;
+		}
 		this.selfWrittenPaths.set(file.path, Date.now());
 		const rawContent = await this.app.vault.read(file);
 		const normalizedContent = removeBindingOnlyFrontmatterBeforeNextFrontmatter(rawContent);
@@ -3699,7 +3870,11 @@ exec "${nodePath}" "${scriptPath}" "$@"
 	}
 
 	private async unbindDeletedRemoteDocument(file: TFile, binding: BoundLarkDocument): Promise<void> {
+		delete this.settings.documentBindings?.[file.path];
+		await this.saveSettingsWithoutClearingCommandCache();
 		this.selfWrittenPaths.set(file.path, Date.now());
+		const legacy = this.app.metadataCache?.getFileCache(file)?.frontmatter;
+		if (legacy?.[FRONTMATTER_URL_KEY] || legacy?.[FRONTMATTER_TOKEN_KEY]) {
 		await this.app.fileManager.processFrontMatter(file, (frontmatter: Record<string, unknown>) => {
 			delete frontmatter.lark_doc;
 			delete frontmatter[FRONTMATTER_URL_KEY];
@@ -3708,6 +3883,7 @@ exec "${nodePath}" "${scriptPath}" "$@"
 			delete frontmatter[FRONTMATTER_REMOTE_ROOT_KEY];
 			delete frontmatter[FRONTMATTER_REMOTE_PARENT_PATH_KEY];
 		});
+		}
 		this.selfWrittenPaths.set(file.path, Date.now());
 		this.removeSyncStateForBinding(binding);
 		await this.saveLarkSyncState();
@@ -3738,6 +3914,394 @@ exec "${nodePath}" "${scriptPath}" "$@"
 		if (this.settings.openAfterSync && url) {
 			window.open(url);
 		}
+	}
+
+	private isPathWithin(path: string, folderPath: string): boolean {
+		return !folderPath || path === folderPath || path.startsWith(`${folderPath}/`);
+	}
+
+	private isFolderDisconnected(path: string): boolean {
+		return Object.keys(this.settings.disconnectedFolders || {}).some((folder) => this.isPathWithin(path, folder));
+	}
+
+	private getRemoteFolderBinding(binding: PublishedFolderBinding, path: string): BoundLarkDocument | undefined {
+		return this.settings.folderBindings[this.getFolderBindingKey(binding.rootParent, path)];
+	}
+
+	private listPublishedEntries(): PublishedLinkEntry[] {
+		const entries = new Map<string, PublishedLinkEntry>();
+		const add = (path: string, kind: PublishedLinkEntry["kind"], binding: { url?: string; token?: string }): void => {
+			const id = `${kind}:${path}`;
+			entries.set(id, { id, path, kind, url: binding.url || "", token: binding.token });
+		};
+		for (const path of Object.keys(this.settings.pendingDocumentCreates || {})) {
+			add(path, "markdown", {});
+			entries.get(`markdown:${path}`)!.name = `${path} (${this.settings.language === "en" ? "creation unconfirmed" : "创建结果待确认"})`;
+		}
+		for (const [path, binding] of Object.entries(this.settings.documentBindings || {})) add(path, "markdown", binding);
+		for (const file of this.app.vault.getMarkdownFiles()) {
+			const binding = this.getBinding(file);
+			if (binding) add(file.path, "markdown", binding);
+		}
+		for (const [path, binding] of Object.entries(this.settings.pdfBindings || {})) {
+			add(path, "pdf", { url: binding.url, token: binding.fileToken });
+		}
+		for (const [folderPath, published] of Object.entries(this.settings.publishedFolders || {})) {
+			const rootBinding = this.getRemoteFolderBinding(published, published.remoteRoot);
+			add(folderPath, "folder", rootBinding || { token: published.rootParent.token });
+			for (const key of Object.keys(this.settings.pendingFolderCreates || {})) {
+				const root = this.getFolderBindingRootParent(key), remotePath = this.getFolderBindingPath(key);
+				if (root.kind !== published.rootParent.kind || root.token !== published.rootParent.token || !this.isPathWithin(remotePath, published.remoteRoot)) continue;
+				const suffix = remotePath.slice(published.remoteRoot.length).replace(/^\/+/, "");
+				add([folderPath, suffix].filter(Boolean).join("/"), "folder", {});
+			}
+			for (const [key, binding] of Object.entries(this.settings.folderBindings)) {
+				const root = this.getFolderBindingRootParent(key);
+				const remotePath = this.getFolderBindingPath(key);
+				if (root.kind !== published.rootParent.kind || root.token !== published.rootParent.token
+					|| !this.isPathWithin(remotePath, published.remoteRoot)) continue;
+				const suffix = remotePath.slice(published.remoteRoot.length).replace(/^\/+/, "");
+				add([folderPath, suffix].filter(Boolean).join("/"), "folder", binding);
+			}
+		}
+		return [...entries.values()].sort((a, b) => a.path.localeCompare(b.path));
+	}
+
+	private getPublishedEntry(path: string, kind: PublishedLinkEntry["kind"]): PublishedLinkEntry | undefined {
+		return this.listPublishedEntries().find((entry) => entry.path === path && entry.kind === kind);
+	}
+
+	private addPublishedLinkMenu(menu: Menu, path: string, kind: PublishedLinkEntry["kind"]): void {
+		const entry = this.getPublishedEntry(path, kind) || { id: `${kind}:${path}`, path, kind, url: "" };
+		if (entry.url) {
+			menu.addItem((item) => item.setTitle(this.t("menuOpenPublishedLink")).setIcon("external-link")
+				.onClick(() => window.open(entry.url)));
+			menu.addItem((item) => item.setTitle(this.t("menuCopyPublishedLink")).setIcon("copy")
+				.onClick(() => { void navigator.clipboard.writeText(entry.url)
+					.then(() => new Notice(this.t("menuCopiedPublishedLink")))
+					.catch((error: unknown) => new Notice(String(error))); }));
+		}
+		menu.addItem((item) => item.setTitle(this.t("menuEditPublishedLink")).setIcon("link")
+			.onClick(() => {
+				if (kind !== "folder" && this.getPublishedEntry(path, kind)) this.openPublishedLinks(path);
+				else new PublishedLinkBindingModal(this.app, this.publishedLinksHost(), entry, () => {}).open();
+			}));
+		if (kind === "folder") {
+			menu.addItem((item) => item.setTitle(this.t("menuManagePublishedLinks")).setIcon("list")
+				.onClick(() => this.openPublishedLinks(path)));
+		}
+	}
+
+	openPublishedLinks(folderPath = ""): void {
+		new PublishedLinksModal(this.app, this.publishedLinksHost(), folderPath).open();
+	}
+
+	private publishedLinksHost(): PublishedLinksHost {
+		return {
+			getLanguage: () => this.settings.language,
+			listEntries: () => this.listPublishedEntries(),
+			recoverBindings: (scope) => (this.operationQueue ??= new SyncQueue()).run(() => this.recoverPublishedBindings(scope)),
+			saveBindingUrl: (entry, url) => (this.operationQueue ??= new SyncQueue()).run(() => this.savePublishedBinding(entry, url)),
+			removeBinding: (entry) => (this.operationQueue ??= new SyncQueue()).run(() => this.disconnectPublishedBinding(entry)),
+			openLocalFile: async (entry) => {
+				const file = this.app.vault.getAbstractFileByPath(entry.path);
+				if (!(file instanceof TFile)) throw new Error(`Local file not found: ${entry.path}`);
+				await this.app.workspace.getLeaf(false).openFile(file);
+			},
+			sync: async (entry) => {
+				if (entry.kind === "folder") { await this.publishFolderInternal(entry.path); return; }
+				const file = this.app.vault.getAbstractFileByPath(entry.path);
+				if (!(file instanceof TFile)) throw new Error(`Local file not found: ${entry.path}`);
+				if (entry.kind === "pdf") { await this.syncPdfFile(file); return; }
+				await this.syncFileInternal(file, { allowCreate: false, openAfterSync: false,
+					showSuccess: false, showRemoteDeletedNotice: false, updateFrontmatter: this.settings.updateFrontmatter, mode: "manual" });
+			}
+		};
+	}
+
+	private async savePublishedBinding(entry: PublishedLinkEntry, url: string): Promise<void> {
+		let parsed: URL;
+		try { parsed = new URL(url); } catch { throw new Error(this.t("invalidPublishedLink")); }
+		if (parsed.protocol !== "https:" || parsed.username || parsed.password
+			|| !/(^|\.)(feishu\.cn|larksuite\.com|larkoffice\.com)$/.test(parsed.hostname)
+			|| !/^\/(docx|wiki|file|drive\/folder)\/[A-Za-z0-9_-]+\/?$/.test(parsed.pathname)) {
+			throw new Error(this.t("invalidPublishedLink"));
+		}
+		const result = await this.runLarkCli(["drive", "+inspect", "--as", "user", "--url", url, "--json"]);
+		const data = result.data;
+		if (!data?.token) throw new Error(this.t("errorNoDocumentToken"));
+		if (entry.kind === "folder") {
+			const wiki = data.wiki_node;
+			if (data.type !== "folder" && !wiki?.node_token) throw new Error(this.t("invalidPublishedLink"));
+			await this.disconnectFolderBinding(entry.path);
+			delete this.settings.disconnectedFolders?.[entry.path];
+			const parent: RemoteParent = { kind: data.type === "folder" ? "drive" : "wiki", token: wiki?.node_token || data.token };
+			this.savePublishedFolderBinding(entry.path, parent, "");
+			this.settings.folderBindings[this.getFolderBindingKey(parent, "")] = { token: parent.token, url, containerKind: parent.kind };
+			await this.saveSettingsWithoutClearingCommandCache();
+			return;
+		}
+		const file = this.app.vault.getAbstractFileByPath(entry.path);
+		if (!(file instanceof TFile)) throw new Error(`Local file not found: ${entry.path}`);
+		if (entry.kind === "markdown") {
+			if (data.type !== "docx") throw new Error(this.t("invalidPublishedLink"));
+			const previous = this.getBinding(file);
+			if (previous) { this.removeSyncStateForBinding(previous); await this.saveLarkSyncState(); }
+			await this.rememberDocumentBinding(file, { token: data.token, url });
+		} else {
+			if (data.type !== "file") throw new Error(this.t("invalidPublishedLink"));
+			const wiki = data.wiki_node;
+			let resolvedParent: PdfPublishParent = { kind: "drive", token: "" };
+			let nodeToken: string | undefined;
+			if (wiki?.node_token) {
+				const node = await this.runLarkCli(["wiki", "+node-get", "--as", "user", "--node-token", wiki.node_token, "--json"]);
+				const details = node.data?.node || node.data;
+				if (details?.obj_type !== "file" || !details.parent_node_token) throw new Error(this.t("invalidPublishedLink"));
+				resolvedParent = { kind: "wiki", token: details.parent_node_token };
+				nodeToken = wiki.node_token;
+			}
+			const options = { vaultRoot: this.getVaultRoot(), vaultPath: file.path, parent: resolvedParent, scope: "user" };
+			this.settings.pdfBindings[entry.path] = { version: 1, key: createPdfBindingKey(options), vaultPath: file.path,
+				parent: resolvedParent, scope: "user", fileName: file.name, contentHash: "0".repeat(64), size: 5,
+				status: "published", fileToken: data.token, nodeToken, url, updatedAt: new Date().toISOString() };
+			await this.saveSettingsWithoutClearingCommandCache();
+		}
+	}
+
+	private async disconnectFolderBinding(path: string): Promise<void> {
+		// Drop only associations for this local subtree; individual documents keep their bindings.
+		const folderEntries = this.listPublishedEntries().filter((entry) => entry.kind === "folder" && this.isPathWithin(entry.path, path));
+		for (const entry of folderEntries) {
+			for (const [key, binding] of Object.entries(this.settings.folderBindings)) {
+				if (binding.token === entry.token) delete this.settings.folderBindings[key];
+			}
+		}
+		for (const [folder, published] of Object.entries(this.settings.publishedFolders)) {
+			if (!this.isPathWithin(path, folder) && !this.isPathWithin(folder, path)) continue;
+			const prefix = this.isPathWithin(folder, path) ? published.remoteRoot
+				: getSelectedRemoteParentPath(folder, `${path}/__file.md`, published.remoteRoot);
+			for (const key of Object.keys(this.settings.pendingFolderCreates || {})) {
+				const root = this.getFolderBindingRootParent(key);
+				if (root.kind === published.rootParent.kind && root.token === published.rootParent.token && this.isPathWithin(this.getFolderBindingPath(key), prefix)) {
+					delete this.settings.pendingFolderCreates[key];
+				}
+			}
+		}
+		for (const folder of Object.keys(this.settings.publishedFolders)) {
+			if (this.isPathWithin(folder, path)) delete this.settings.publishedFolders[folder];
+		}
+	}
+
+	private async disconnectPublishedBinding(entry: PublishedLinkEntry): Promise<void> {
+		if (entry.kind === "folder") {
+			await this.disconnectFolderBinding(entry.path);
+			(this.settings.disconnectedFolders ??= {})[entry.path] = true;
+		}
+		else if (entry.kind === "pdf") delete this.settings.pdfBindings[entry.path];
+		else {
+			const file = this.app.vault.getAbstractFileByPath(entry.path);
+			const binding = file instanceof TFile ? this.getBinding(file) : this.settings.documentBindings[entry.path];
+			(this.settings.disconnectedBindings ??= {})[entry.path] = true;
+			delete this.settings.documentBindings[entry.path];
+			delete this.settings.pendingDocumentCreates?.[entry.path];
+			if (binding) { this.removeSyncStateForBinding(binding); await this.saveLarkSyncState(); }
+		}
+		await this.saveSettingsWithoutClearingCommandCache();
+	}
+
+	private async moveLocalBindings(oldPath: string, newPath: string, isFolder = true): Promise<void> {
+		// Folder-cache paths follow the local hierarchy while their tokens stay fixed.
+		const containing = Object.entries(this.settings.publishedFolders).filter(([folder]) =>
+			folder !== oldPath && this.isPathWithin(oldPath, folder)).sort((a, b) => b[0].length - a[0].length)[0];
+		if (containing && isFolder) {
+			const [folderPath, published] = containing;
+			const oldPrefix = getSelectedRemoteParentPath(folderPath, `${oldPath}/__file.md`, published.remoteRoot);
+			const newPrefix = getSelectedRemoteParentPath(folderPath, `${newPath}/__file.md`, published.remoteRoot);
+			const movedFolder = this.getRemoteFolderBinding(published, oldPrefix);
+			for (const [key, binding] of Object.entries(this.settings.folderBindings)) {
+				const root = this.getFolderBindingRootParent(key), remotePath = this.getFolderBindingPath(key);
+				if (root.kind !== published.rootParent.kind || root.token !== published.rootParent.token || !this.isPathWithin(remotePath, oldPrefix)) continue;
+				delete this.settings.folderBindings[key];
+				if (this.isPathWithin(newPath, folderPath)) {
+					this.settings.folderBindings[this.getFolderBindingKey(published.rootParent, newPrefix + remotePath.slice(oldPrefix.length))] = binding;
+				} else if (movedFolder) {
+					const parent = { token: movedFolder.token, kind: movedFolder.containerKind || published.rootParent.kind };
+					this.settings.folderBindings[this.getFolderBindingKey(parent, remotePath.slice(oldPrefix.length).replace(/^\/+/, ""))] = binding;
+				}
+			}
+			for (const [key, title] of Object.entries(this.settings.pendingFolderCreates || {})) {
+				const root = this.getFolderBindingRootParent(key), remotePath = this.getFolderBindingPath(key);
+				if (root.kind === published.rootParent.kind && root.token === published.rootParent.token && this.isPathWithin(remotePath, oldPrefix)) {
+					delete this.settings.pendingFolderCreates[key];
+					this.settings.pendingFolderCreates[this.getFolderBindingKey(published.rootParent, newPrefix + remotePath.slice(oldPrefix.length))] = title;
+				}
+			}
+			if (!this.isPathWithin(newPath, folderPath) && movedFolder) {
+				this.savePublishedFolderBinding(newPath, { token: movedFolder.token, kind: movedFolder.containerKind || published.rootParent.kind }, "");
+			}
+		}
+		const movePaths = <T>(records: Record<string, T>): void => {
+			for (const path of Object.keys(records || {})) {
+				if (!this.isPathWithin(path, oldPath)) continue;
+				const nextPath = newPath + path.slice(oldPath.length);
+				const record = records[path];
+				if (!record) continue;
+				records[nextPath] = record;
+				delete records[path];
+			}
+		};
+		movePaths(this.settings.documentBindings);
+		movePaths(this.settings.pendingDocumentCreates);
+		movePaths(this.settings.disconnectedBindings);
+		movePaths(this.settings.disconnectedFolders);
+		movePaths(this.settings.pdfBindings);
+		movePaths(this.settings.publishedFolders);
+		for (const [path, binding] of Object.entries(this.settings.pdfBindings || {})) {
+			if (!this.isPathWithin(path, newPath)) continue;
+			binding.vaultPath = path;
+			binding.key = createPdfBindingKey({ vaultRoot: this.getVaultRoot(), vaultPath: path, parent: binding.parent, scope: binding.scope });
+		}
+		await this.saveSettingsWithoutClearingCommandCache();
+	}
+
+	private toPdfParent(parent: RemoteParent): PdfPublishParent {
+		if (parent.kind === "drive" || (!parent.token && parent.kind === "my_library")) return { kind: "drive", token: parent.token };
+		if (parent.kind === "wiki" || parent.kind === "my_library") return { kind: "wiki", token: parent.token };
+		throw new Error(this.t("invalidPublishedLink"));
+	}
+
+	private async syncPdfFile(file: TFile): Promise<void> {
+		await (this.operationQueue ??= new SyncQueue()).run(() => this.syncPdfFileUnlocked(file));
+	}
+
+	private async syncPdfFileUnlocked(file: TFile, parent?: RemoteParent): Promise<void> {
+		if (this.hasUnsavedSettings) await this.saveSettingsWithoutClearingCommandCache();
+		const existing = this.settings.pdfBindings[file.path];
+		const destination = existing?.parent || this.toPdfParent(parent
+			|| (await this.resolvePublishedFolderParentForFile(file))?.parent || await this.resolveRemoteRootParent());
+		const options = { vaultRoot: this.getVaultRoot(), vaultPath: file.path, parent: destination, scope: existing?.scope || "user" };
+		await publishPdf(options, {
+			loadBinding: async () => this.settings.pdfBindings[file.path],
+			saveBinding: async (_key, binding) => {
+				this.settings.pdfBindings[file.path] = binding;
+				await this.saveSettingsWithoutClearingCommandCache();
+			},
+			runLarkCli: (args, commandOptions) => this.runLarkCli(args, commandOptions)
+		});
+	}
+
+	private async listRemoteDocuments(parent: RemoteParent): Promise<Array<BoundLarkDocument & { title: string }>> {
+		const documents: Array<BoundLarkDocument & { title: string }> = [];
+		const wiki = parent.kind === "wiki" || parent.kind === "my_library";
+		let spaceId = "";
+		if (wiki) {
+			const info = await this.runLarkCli(["wiki", "+node-get", "--as", "user", "--node-token", parent.token, "--json"]);
+			spaceId = info.data?.node?.space_id || info.data?.space_id || "";
+			if (!spaceId) throw new Error("Cannot resolve the published folder's wiki space.");
+		}
+		let cursor = "";
+		const seen = new Set<string>();
+		do {
+			const args = wiki
+				? ["wiki", "+node-list", "--as", "user", "--space-id", spaceId, "--parent-node-token", parent.token, "--page-size", "50", "--json"]
+				: ["drive", "files", "list", "--as", "user", "--folder-token", parent.token, "--page-size", "200", "--json"];
+			if (cursor) args.push("--page-token", cursor);
+			const result = await this.runLarkCli(args);
+			const data = result.data;
+			if (wiki) {
+				if (!Array.isArray(data?.nodes)) throw new Error("Invalid wiki folder listing.");
+				for (const node of data.nodes) {
+					if (node.obj_type === "docx" && node.obj_token && node.title) {
+						documents.push({ title: node.title, token: node.obj_token, nodeToken: node.node_token, url: node.url || "" });
+					}
+				}
+			} else {
+				if (!Array.isArray(data?.files)) throw new Error("Invalid Drive folder listing.");
+				for (const file of data.files) {
+					if (file.type === "docx") documents.push({ title: file.name, token: file.token, url: file.url || "" });
+				}
+			}
+			cursor = data?.has_more ? data.page_token || data.next_page_token || "" : "";
+			if (data?.has_more && (!cursor || seen.has(cursor))) throw new Error("Incomplete remote folder listing; binding recovery stopped.");
+			seen.add(cursor);
+		} while (cursor);
+		return documents;
+	}
+
+	private async recoverPreparedBindings(files: FolderPreparedFile[], parents: Map<string, RemoteParent>, strict: boolean, onlyPath?: string): Promise<{ recovered: number; conflicts: number }> {
+		let recovered = 0, conflicts = 0;
+		const listings = new Map<string, Array<BoundLarkDocument & { title?: string }>>();
+		const localCounts = new Map<string, number>();
+		const boundTokens = new Set(Object.values(this.settings.documentBindings).map((binding) => getDocumentStateKey(binding.token || binding.url)));
+		if (!files.some((prepared) => !prepared.binding && !this.settings.disconnectedBindings?.[prepared.file.path])) return { recovered, conflicts };
+		for (const file of this.app.vault.getMarkdownFiles()) {
+			const binding = this.getBinding(file);
+			if (!binding) continue;
+			boundTokens.add(getDocumentStateKey(binding.token || binding.url));
+			if (binding.url) boundTokens.add(extractDocumentToken(binding.url));
+		}
+		for (const prepared of files) {
+			if (prepared.binding || this.settings.disconnectedBindings?.[prepared.file.path]) continue;
+			const parent = parents.get(prepared.remoteParentPath);
+			const title = extractTitle(prepared.file, prepared.preparedContent.content, "first-heading");
+			const key = `${parent?.kind}:${parent?.token}:${title}`;
+			localCounts.set(key, (localCounts.get(key) || 0) + 1);
+		}
+		for (const prepared of files) {
+			if (prepared.binding || this.settings.disconnectedBindings?.[prepared.file.path]) continue;
+			if (onlyPath && prepared.file.path !== onlyPath) continue;
+			const parent = parents.get(prepared.remoteParentPath);
+			if (!parent?.token || parent.kind === "unknown") continue;
+			const key = `${parent.kind}:${parent.token}`;
+			let remote = listings.get(key);
+			if (!remote) { remote = await this.listRemoteDocuments(parent); listings.set(key, remote); }
+			const title = extractTitle(prepared.file, prepared.preparedContent.content, "first-heading");
+			const matches = remote.filter((document) => document.title === title);
+			if (!matches.length) continue;
+			const match = matches[0]!;
+			const alreadyBound = boundTokens.has(getDocumentStateKey(match.token)) || Boolean(match.nodeToken && boundTokens.has(match.nodeToken));
+			if (matches.length !== 1 || alreadyBound || (localCounts.get(`${parent.kind}:${parent.token}:${title}`) || 0) > 1) {
+				conflicts += 1;
+				if (strict) throw new LocalizedSyncError(this.settings.language === "en"
+					? `Ambiguous remote title for ${prepared.file.path}. Use Manage Feishu/Lark binding to choose its existing URL before syncing.`
+					: `${prepared.file.path} 在远端有同名冲突。请右键“管理飞书绑定”，指定已有文档链接后再同步。`);
+				continue;
+			}
+			if (!match.url) {
+				const info = await this.runLarkCli(["drive", "+inspect", "--as", "user", "--url", match.token, "--type", "docx", "--json"]);
+				match.url = info.data?.url || "";
+				if (!match.url) throw new Error(this.t("errorNoDocumentToken"));
+			}
+			prepared.binding = { ...match, containerToken: parent.token, containerKind: parent.kind };
+			await this.rememberDocumentBinding(prepared.file, prepared.binding);
+			boundTokens.add(getDocumentStateKey(prepared.binding.token));
+			recovered += 1;
+		}
+		return { recovered, conflicts };
+	}
+
+	private async recoverPublishedBindings(scope: string): Promise<string> {
+		const files: FolderPreparedFile[] = [];
+		const parents = new Map<string, RemoteParent>();
+		for (const file of this.app.vault.getMarkdownFiles()) {
+			if (!this.isPathWithin(file.path, scope) || this.getBinding(file)) continue;
+			const published = this.findPublishedFolderForFile(file);
+			if (!published) continue;
+			const remotePath = this.getRemoteParentPath(published.folderPath, file, published.binding.remoteRoot);
+			const folder = this.getRemoteFolderBinding(published.binding, remotePath);
+			if (!folder?.token) continue;
+			const parent = { token: folder.token, kind: folder.containerKind || published.binding.rootParent.kind };
+			const key = `${parent.kind}:${parent.token}`;
+			parents.set(key, parent);
+			const raw = await this.app.vault.read(file);
+			files.push({ file, binding: null, remoteParentPath: key, preparedContent: {
+				content: prepareNoteContentForLark(file, removeLarkBinding(removeBindingOnlyFrontmatterBeforeNextFrontmatter(raw)), this.settings.titleSource), images: []
+			} });
+		}
+		const { recovered, conflicts } = await this.recoverPreparedBindings(files, parents, false);
+		return this.settings.language === "en"
+			? `Recovered ${recovered} Markdown bindings; ${conflicts} conflicts need a URL selected manually.`
+			: `已恢复 ${recovered} 篇 Markdown 的绑定；${conflicts} 个同名冲突需手动指定链接。`;
 	}
 
 	t(key: MessageKey, params: Record<string, string> = {}): string {
@@ -3799,6 +4363,10 @@ class LarkCliSyncSettingTab extends PluginSettingTab {
 						await this.plugin.saveSettings();
 					});
 				});
+
+		new Setting(containerEl).setName(this.plugin.t("menuManagePublishedLinks"))
+			.addButton((button) => button.setButtonText(this.plugin.t("menuManagePublishedLinks"))
+				.onClick(() => this.plugin.openPublishedLinks()));
 
 		const contentSectionEl = this.createSection(containerEl, "settingsSectionContent");
 		new Setting(contentSectionEl)

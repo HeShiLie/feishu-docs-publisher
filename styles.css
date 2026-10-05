@@ -29,3 +29,37 @@
 .feishu-lark-pre-push-hook-status.is-muted {
 	color: var(--text-muted);
 }
+
+.feishu-lark-published-modal {
+	width: min(960px, 92vw);
+}
+
+.feishu-lark-published-entry {
+	flex-wrap: wrap;
+	gap: var(--size-4-2);
+}
+
+.feishu-lark-published-entry .setting-item-info {
+	flex: 1 1 240px;
+	min-width: 0;
+	overflow-wrap: anywhere;
+}
+
+.feishu-lark-published-entry .setting-item-description {
+	white-space: pre-wrap;
+}
+
+.feishu-lark-published-entry .setting-item-control {
+	flex: 1 1 360px;
+	flex-wrap: wrap;
+	justify-content: flex-start;
+	gap: var(--size-4-2);
+}
+
+.feishu-lark-published-feedback:empty {
+	display: none;
+}
+
+.feishu-lark-published-feedback.is-error {
+	color: var(--text-error);
+}

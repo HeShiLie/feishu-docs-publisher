@@ -59,8 +59,19 @@ async function run() {
 		await testOverwritePreservesDocumentTitleBeforeUpdate(workspace);
 		await testOverwriteUpdates(workspace);
 		await testUnboundFilesDoNotBlock(workspace);
+		await testDisconnectedBindingsBlockLegacyFrontmatter(workspace);
+		await testFalseAndUnrelatedTombstonesDoNotBlock(workspace);
+		await testPersistedBindingWithoutFrontmatter(workspace);
+		await testPersistedBindingTakesPriority(workspace);
+		await testPersistedBindingUsesVaultRelativePaths(workspace);
+		await testInvalidPersistedBindingFallsBackToFrontmatter(workspace);
+		await testPersistedPdfBindingIsExcluded(workspace);
+		await testAutoSyncModeStillControlsPersistedBindings(workspace);
 		await testDeletedMarkdownDoesNotBlock(workspace);
 		await testDeletedRemoteDocumentUnbindsAndBlocks(workspace);
+		await testDeletedRemoteDocumentRemovesPersistedBinding(workspace);
+		await testDeletedRemoteDocumentRemovesPersistedBinding(workspace, false);
+		await testUnrelatedErrorsPreserveBindings(workspace);
 		await testCanonicalStateKey(workspace);
 		await testWikiUrlReusesCanonicalImageState(workspace);
 		await testStateWritePreservesExternalDocuments(workspace);
@@ -74,6 +85,7 @@ async function run() {
 		await testMacSystemNotificationOnFailure(workspace);
 		await testWindowsSystemNotificationOnFailure(workspace);
 		await testImageOnlyChangeSyncsReferencingDocument(workspace);
+		await testImageOnlyChangeSyncsReferencingDocument(workspace, true);
 	} finally {
 		await rm(workspace, { recursive: true, force: true });
 	}
@@ -999,6 +1011,225 @@ async function testDeletedMarkdownDoesNotBlock(workspace) {
 	assert.equal(await readLog(workspace), "");
 }
 
+async function testDisconnectedBindingsBlockLegacyFrontmatter(workspace) {
+	await resetWorkspaceFiles(workspace);
+	const notePath = "disconnected/notes with spaces/笔记.md";
+	const nestedContent = boundMarkdownWithToken("doc-token", "https://example.feishu.cn/docx/doc-token", "Stale binding");
+	const rootContent = await readFile(join(workspace, "bound.md"), "utf8");
+	await mkdir(join(workspace, "disconnected", "notes with spaces"), { recursive: true });
+	await writeFile(join(workspace, notePath), nestedContent);
+	await execFileAsync("git", ["add", "--all"], { cwd: workspace });
+	try {
+		await writeSettings(workspace, {
+			syncStrategy: "precise", updateFrontmatter: false, documentBindings: {},
+			disconnectedBindings: { "bound.md": true, [notePath]: true }
+		});
+		await writeSyncState(workspace, "doc-token", "# bound\n\nBody");
+		const settingsBefore = await readFile(settingsPath(workspace), "utf8");
+		const stateBefore = await readSyncState(workspace);
+		await clearLog(workspace);
+		await runHook(workspace);
+		assert.equal(await readLog(workspace), "");
+		assert.equal(await readFile(join(workspace, "bound.md"), "utf8"), rootContent);
+		assert.equal(await readFile(join(workspace, notePath), "utf8"), nestedContent);
+		assert.equal(await readFile(settingsPath(workspace), "utf8"), settingsBefore);
+		assert.deepEqual(await readSyncState(workspace), stateBefore);
+	} finally {
+		await rm(join(workspace, "disconnected"), { recursive: true, force: true });
+		await execFileAsync("git", ["add", "--all"], { cwd: workspace });
+	}
+}
+
+async function testFalseAndUnrelatedTombstonesDoNotBlock(workspace) {
+	await resetWorkspaceFiles(workspace);
+	for (const value of [false, "true"]) {
+		await writeSettings(workspace, {
+			syncStrategy: "overwrite", updateFrontmatter: false,
+			disconnectedBindings: {
+				"bound.md": value,
+				"nested/bound.md": true,
+				[join(workspace, "bound.md")]: true
+			}
+		});
+		await writeSyncStateRaw(workspace, { version: 1, documents: {} });
+		await clearLog(workspace);
+		await runHook(workspace);
+		assert.match(await readLog(workspace), /docs \+update .*--doc https:\/\/example\.feishu\.cn\/docx\/doc-token/);
+	}
+}
+
+async function testPersistedBindingWithoutFrontmatter(workspace) {
+	await resetWorkspaceFiles(workspace);
+	await writeFile(join(workspace, "bound.md"), "Changed");
+	await execFileAsync("git", ["add", "bound.md"], { cwd: workspace });
+	const record = { token: "doc-token", url: "https://example.feishu.cn/docx/doc-token", publishedAt: "2026-10-05" };
+	await writeSettings(workspace, { syncStrategy: "precise", updateFrontmatter: false, documentBindings: { "bound.md": record } });
+	await writeSyncStateRaw(workspace, { version: 1, documents: {} });
+	await clearLog(workspace);
+	await runHook(workspace, { env: { LARK_CLI_FETCH_CHANGED_AFTER_UPDATE: "1" } });
+	assert.match(await readLog(workspace), /docs \+update .*--doc doc-token .*--command block_replace/);
+	assert.equal(await readFile(join(workspace, "bound.md"), "utf8"), "Changed");
+	assert.deepEqual(JSON.parse(await readFile(settingsPath(workspace), "utf8")).documentBindings["bound.md"], record);
+	assert.equal(JSON.parse(await readFile(settingsPath(workspace), "utf8")).updateFrontmatter, false);
+	assert.equal((await readSyncState(workspace)).documents["doc-token"].contentHash, await createContentHash("# bound\n\nChanged"));
+}
+
+async function testPersistedBindingTakesPriority(workspace) {
+	await resetWorkspaceFiles(workspace);
+	await writeFile(join(workspace, "bound.md"), boundMarkdownWithToken("legacy-token", "https://example.feishu.cn/docx/legacy-token", "Body"));
+	await execFileAsync("git", ["add", "bound.md"], { cwd: workspace });
+	await writeSettings(workspace, {
+		syncStrategy: "overwrite",
+		documentBindings: { "bound.md": { token: "doc-token", url: "https://example.feishu.cn/wiki/wiki-node" } }
+	});
+	await writeSyncStateRaw(workspace, { version: 1, documents: {
+		"wiki-node": { doc: "legacy-token", contentHash: await createContentHash("# bound\n\nBody"), units: [] }
+	} });
+	await clearLog(workspace);
+	await runHook(workspace);
+	const log = await readLog(workspace);
+	assert.match(log, /docs \+update .*--doc doc-token .*--command overwrite/);
+	assert.doesNotMatch(log, /legacy-token|--doc https:\/\/example\.feishu\.cn\/wiki/);
+	assert.ok((await readSyncState(workspace)).documents["doc-token"]);
+}
+
+async function testPersistedBindingUsesVaultRelativePaths(workspace) {
+	await resetWorkspaceFiles(workspace);
+	await writeFile(join(workspace, "bound.md"), "Unbound");
+	const notePath = "nested/notes with spaces/笔记.md";
+	await mkdir(join(workspace, "nested", "notes with spaces"), { recursive: true });
+	await writeFile(join(workspace, notePath), "Body");
+	await execFileAsync("git", ["add", "--all"], { cwd: workspace });
+	try {
+		for (const binding of [{ token: "doc-token" }, { url: "https://example.feishu.cn/docx/doc-token" }]) {
+			await writeSettings(workspace, {
+				syncStrategy: "overwrite",
+				documentBindings: {
+					[notePath]: binding,
+					"笔记.md": { token: "wrong-basename" },
+					[join(workspace, "bound.md")]: { token: "wrong-absolute-path" }
+				}
+			});
+			await writeSyncStateRaw(workspace, { version: 1, documents: {} });
+			await clearLog(workspace);
+			await runHook(workspace);
+			const log = await readLog(workspace);
+			assert.match(log, /docs \+update .*--doc (?:doc-token|https:\/\/example\.feishu\.cn\/docx\/doc-token) .*--command overwrite/);
+			assert.equal(log.split("\n").filter((line) => line.includes("+update")).length, 1);
+			assert.doesNotMatch(log, /wrong-basename|wrong-absolute-path/);
+		}
+		await execFileAsync("git", ["commit", "-m", "nested note baseline"], { cwd: workspace });
+		const remoteHead = (await execFileAsync("git", ["rev-parse", "HEAD"], { cwd: workspace })).stdout.trim();
+		await writeFile(join(workspace, notePath), "Changed nested note");
+		await execFileAsync("git", ["add", notePath], { cwd: workspace });
+		await execFileAsync("git", ["commit", "-m", "nested note changed"], { cwd: workspace });
+		const localHead = (await execFileAsync("git", ["rev-parse", "HEAD"], { cwd: workspace })).stdout.trim();
+		await clearLog(workspace);
+		const result = await spawnHook(workspace, `refs/heads/main ${localHead} refs/heads/main ${remoteHead}\n`, {});
+		assert.equal(result.exitCode, 0, result.stderr);
+		assert.match(await readLog(workspace), /docs \+update .*--command overwrite/);
+		await writeFile(join(workspace, notePath), "Uncommitted nested note");
+		await clearLog(workspace);
+		const fallbackResult = await spawnHook(workspace, "", {});
+		assert.equal(fallbackResult.exitCode, 0, fallbackResult.stderr);
+		assert.match(await readLog(workspace), /docs \+update .*--command overwrite/);
+	} finally {
+		await rm(join(workspace, "nested"), { recursive: true, force: true });
+		await execFileAsync("git", ["add", "--all"], { cwd: workspace });
+	}
+}
+
+async function testInvalidPersistedBindingFallsBackToFrontmatter(workspace) {
+	await resetWorkspaceFiles(workspace);
+	await writeSettings(workspace, {
+		syncStrategy: "overwrite",
+		documentBindings: { "bound.md": { token: 42, url: "  " }, "unbound.md": null }
+	});
+	await writeSyncStateRaw(workspace, { version: 1, documents: {} });
+	await clearLog(workspace);
+	await runHook(workspace);
+	assert.match(await readLog(workspace), /docs \+update .*--doc https:\/\/example\.feishu\.cn\/docx\/doc-token/);
+}
+
+async function testPersistedPdfBindingIsExcluded(workspace) {
+	await resetWorkspaceFiles(workspace);
+	await writeFile(join(workspace, "bound.md"), "Unbound");
+	await writeFile(join(workspace, "bound.pdf"), "%PDF-1.7");
+	await execFileAsync("git", ["add", "--all"], { cwd: workspace });
+	try {
+		await writeSettings(workspace, {
+			documentBindings: { "bound.pdf": { token: "pdf-token", url: "https://example.feishu.cn/file/pdf-token" } }
+		});
+		await clearLog(workspace);
+		await runHook(workspace);
+		assert.equal(await readLog(workspace), "");
+	} finally {
+		await unlink(join(workspace, "bound.pdf"));
+		await execFileAsync("git", ["add", "--all"], { cwd: workspace });
+	}
+}
+
+async function testAutoSyncModeStillControlsPersistedBindings(workspace) {
+	await resetWorkspaceFiles(workspace);
+	await writeSettings(workspace, {
+		autoSyncMode: "manual",
+		documentBindings: { "bound.md": { token: "doc-token" } }
+	});
+	await clearLog(workspace);
+	await runHook(workspace);
+	assert.equal(await readLog(workspace), "");
+}
+
+async function testDeletedRemoteDocumentRemovesPersistedBinding(workspace, legacyFrontmatter = true) {
+	await resetWorkspaceFiles(workspace);
+	const original = legacyFrontmatter ? `---\nlark_doc_token: legacy-token\ntags: [sync]\n---\nBody` : "Body";
+	await writeFile(join(workspace, "bound.md"), original);
+	await execFileAsync("git", ["add", "bound.md"], { cwd: workspace });
+	const otherBinding = { token: "other-token", url: "https://example.feishu.cn/docx/other-token" };
+	await writeSettings(workspace, {
+		syncStrategy: "precise", language: "en", unrelatedSetting: "keep", updateFrontmatter: false,
+		documentBindings: { "bound.md": { token: "doc-token" }, "other.md": otherBinding }
+	});
+	await writeSyncState(workspace, "doc-token", "# bound\n\nBody");
+	await clearLog(workspace);
+	const result = await runHook(workspace, { reject: false, env: { LARK_CLI_DELETED_DOC: "doc-token" } });
+	assert.equal(result.exitCode, 1);
+	assert.match(result.stderr, /Binding was removed automatically/);
+	const settings = JSON.parse(await readFile(settingsPath(workspace), "utf8"));
+	assert.equal(settings.documentBindings["bound.md"], undefined);
+	assert.deepEqual(settings.documentBindings["other.md"], otherBinding);
+	assert.equal(settings.unrelatedSetting, "keep");
+	assert.equal(settings.updateFrontmatter, false);
+	assert.ok(settings.larkCliVersionCheck);
+	assert.equal(await readFile(join(workspace, "bound.md"), "utf8"), legacyFrontmatter ? "---\ntags: [sync]\n---\nBody" : "Body");
+	assert.equal((await readSyncState(workspace)).documents["doc-token"], undefined);
+	await clearLog(workspace);
+	await runHook(workspace);
+	assert.equal(await readLog(workspace), "");
+}
+
+async function testUnrelatedErrorsPreserveBindings(workspace) {
+	await resetWorkspaceFiles(workspace);
+	const original = await readFile(join(workspace, "bound.md"), "utf8");
+	const binding = { token: "doc-token", url: "https://example.feishu.cn/docx/doc-token" };
+	for (const env of [
+		{ LARK_CLI_ERROR_RESULT: JSON.stringify({ code: 999, message: "Permission denied for token 3380003" }) },
+		{ LARK_CLI_ERROR_RESULT: JSON.stringify({ code: 999, message: "Permission denied", hint: "Document page has been deleted is an unrelated example" }) },
+		{ LARK_CLI_PROCESS_ERROR: "request timeout: Document page has been deleted (untrusted command output)" }
+	]) {
+		await writeSettings(workspace, { syncStrategy: "overwrite", language: "en", documentBindings: { "bound.md": binding } });
+		await writeSyncState(workspace, "doc-token", "# bound\n\nBody");
+		await clearLog(workspace);
+		const result = await runHook(workspace, { reject: false, env });
+		assert.equal(result.exitCode, 1);
+		assert.doesNotMatch(result.stderr, /Binding was removed automatically/);
+		assert.equal(await readFile(join(workspace, "bound.md"), "utf8"), original);
+		assert.deepEqual(JSON.parse(await readFile(settingsPath(workspace), "utf8")).documentBindings["bound.md"], binding);
+		assert.ok((await readSyncState(workspace)).documents["doc-token"]);
+		assert.equal((await readLog(workspace)).split("\n").filter((line) => line.includes("+update")).length, 1);
+	}
+}
+
 async function testDeletedRemoteDocumentUnbindsAndBlocks(workspace) {
 	await resetWorkspaceFiles(workspace);
 	await writeFile(join(workspace, "bound.md"), `---
@@ -1029,10 +1260,11 @@ Body`);
 	assert.equal(state.documents["doc-token"], undefined);
 }
 
-async function testImageOnlyChangeSyncsReferencingDocument(workspace) {
+async function testImageOnlyChangeSyncsReferencingDocument(workspace, persistedBinding = false) {
 	await resetWorkspaceFiles(workspace);
 	const imagePath = join(workspace, "diagram.png");
-	const markdown = boundMarkdown("https://example.feishu.cn/docx/doc-token", "Body\n\n![[diagram.png|320]]");
+	const body = "Body\n\n![[diagram.png|320]]";
+	const markdown = persistedBinding ? body : boundMarkdown("https://example.feishu.cn/docx/doc-token", body);
 	await writeFile(imagePath, createPngBuffer(8, 4, 1));
 	await writeFile(join(workspace, "bound.md"), markdown);
 	await execFileAsync("git", ["add", "bound.md", "diagram.png"], { cwd: workspace });
@@ -1056,7 +1288,10 @@ async function testImageOnlyChangeSyncsReferencingDocument(workspace) {
 		version: 1,
 		documents: { "doc-token": previousState }
 	});
-	await writeSettings(workspace, { autoSyncMode: "pre-push", syncStrategy: "precise", language: "en" });
+	await writeSettings(workspace, {
+		autoSyncMode: "pre-push", syncStrategy: "precise", language: "en",
+		...(persistedBinding ? { updateFrontmatter: false, documentBindings: { "bound.md": { token: "doc-token" } } } : {})
+	});
 	await clearLog(workspace);
 	await writeFile(mediaStatePath(workspace), JSON.stringify({ content: previousRemoteXml, revisionId: 4 }));
 
@@ -1139,6 +1374,9 @@ async function spawnHook(workspace, stdin, envOverrides) {
 			});
 		});
 		child.stdin.end(stdin);
+	}).then(async (result) => {
+		assert.doesNotMatch(await readLog(workspace), /docs \+create\b/, "pre-push must never create documents, including on failure or retry");
+		return result;
 	});
 }
 
@@ -1227,6 +1465,14 @@ if (args[0] === "-version") {
 }
 if (args[0] === "-v") {
   process.stdout.write(process.env.LARK_CLI_VERSION || "1.0.54");
+  process.exit(0);
+}
+if (process.env.LARK_CLI_PROCESS_ERROR) {
+  process.stderr.write(process.env.LARK_CLI_PROCESS_ERROR);
+  process.exit(1);
+}
+if (process.env.LARK_CLI_ERROR_RESULT) {
+  process.stdout.write(JSON.stringify({ ok: false, error: JSON.parse(process.env.LARK_CLI_ERROR_RESULT) }));
   process.exit(0);
 }
 const docIndex = args.indexOf("--doc");
