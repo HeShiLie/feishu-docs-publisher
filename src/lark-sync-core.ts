@@ -3112,7 +3112,19 @@ function createXmlTableFingerprint(content: string): string {
 }
 
 function normalizeFingerprintText(content: string): string {
-	return normalizeMarkdownRoundTripText(decodeXmlEntities(content))
+	const normalized = normalizeMarkdownRoundTripText(decodeXmlEntities(content));
+	// Keep link destinations out of Markdown emphasis/escape normalization.
+	let placeholderPrefix = "\uE000larklink";
+	while (normalized.includes(placeholderPrefix)) placeholderPrefix += "x";
+	const targets: string[] = [];
+	const protectedContent = normalized.replace(
+		/\]\(((?:https?:\/\/|mailto:)[^)\s]+)\)/gi,
+		(_match, target: string) => {
+			const index = targets.push(normalizeMarkdownLinkQuery(target)) - 1;
+			return `](${placeholderPrefix}${index}\uE001)`;
+		}
+	);
+	let fingerprint = protectedContent
 		.replace(/\\([~`*_{[\]}()#+\-.!|<>])/g, "$1")
 		.replace(/`([^`]+)`/g, "$1")
 		.replace(/\*\*([^*]+)\*\*/g, "$1")
@@ -3121,10 +3133,36 @@ function normalizeFingerprintText(content: string): string {
 		.replace(/_([^_]+)_/g, "$1")
 		.replace(/\s+/g, " ")
 		.trim();
+	for (const [index, target] of targets.entries()) {
+		fingerprint = fingerprint.replace(`${placeholderPrefix}${index}\uE001`, () => target);
+	}
+	return fingerprint;
 }
 
 function normalizeMarkdownRoundTripText(content: string): string {
-	return normalizeMarkdownInternalLinks(normalizeMarkdownFormattedSpanSpacing(content));
+	return normalizeMarkdownInternalLinks(normalizeMarkdownFormattedSpanSpacing(normalizeMarkdownDocReferences(content)));
+}
+
+function normalizeMarkdownLinkQuery(target: string): string {
+	const unescaped = normalizeMarkdownLinkTarget(target);
+	const queryStart = unescaped.indexOf("?");
+	const fragmentStart = unescaped.indexOf("#");
+	if (queryStart < 0 || (fragmentStart >= 0 && fragmentStart < queryStart)) return unescaped;
+	const queryEnd = fragmentStart < 0 ? unescaped.length : fragmentStart;
+	const normalizeComponent = (component: string): string => {
+		try {
+			return encodeURIComponent(decodeURIComponent(component));
+		} catch {
+			return component;
+		}
+	};
+	const query = unescaped.slice(queryStart + 1, queryEnd).split("&").map((parameter) => {
+		const separator = parameter.indexOf("=");
+		return separator < 0
+			? normalizeComponent(parameter)
+			: `${normalizeComponent(parameter.slice(0, separator))}=${normalizeComponent(parameter.slice(separator + 1))}`;
+	}).join("&");
+	return `${unescaped.slice(0, queryStart + 1)}${query}${unescaped.slice(queryEnd)}`;
 }
 
 function normalizeMarkdownInternalLinks(content: string): string {
@@ -3159,8 +3197,8 @@ function normalizeBlockquoteUrlSelfLinks(content: string): string {
 	);
 }
 
-function normalizeMarkdownBlockquoteRoundTrip(content: string): string {
-	const normalizedContent = content
+function normalizeMarkdownDocReferences(content: string): string {
+	return content
 		.replace(/<cite\b([^>]*)>[\s\S]*?<\/cite>/gi, (match, attributes: string) => {
 			const docId = readXmlAttribute(attributes, "doc-id");
 			return docId ? `lark-doc:${docId}` : match;
@@ -3168,7 +3206,11 @@ function normalizeMarkdownBlockquoteRoundTrip(content: string): string {
 		.replace(/<cite\b([^>]*)\/>/gi, (match, attributes: string) => {
 			const docId = readXmlAttribute(attributes, "doc-id");
 			return docId ? `lark-doc:${docId}` : match;
-		})
+		});
+}
+
+function normalizeMarkdownBlockquoteRoundTrip(content: string): string {
+	const normalizedContent = normalizeMarkdownDocReferences(content)
 		.replace(/<br\s*\/?>/gi, "\n")
 		.replace(/<\/?(?:blockquote|p)\b[^>]*>/gi, "\n");
 	return normalizeBlockquoteUrlSelfLinks(normalizedContent);

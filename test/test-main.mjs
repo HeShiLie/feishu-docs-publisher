@@ -429,6 +429,27 @@ assert.deepEqual(overwriteDiagnostics, [["doc-token", 8, 15, {
 	observedRevisionId: 15
 }]]);
 
+const roundTripPlugin = createPlugin();
+const roundTripBaseline = '# Note\n\n# Original heading\n\nSee <cite type="doc" doc-id="linkedDoc"></cite>.\n\n[Video\\_guide](https://example.com/?id=Ab%2BC%3D%3D&share_id=first_value)';
+roundTripPlugin.fetchLarkDocumentWithIds = async () => ({
+	doc: "doc-token",
+	content: '<title id="doc-token">Note</title><h1 id="redundant-title">Note</h1><h1 id="heading">Original heading</h1><p id="reference">See <cite doc-id="linkedDoc" file-type="docx" title="Linked_note" type="doc"></cite>.</p><p id="video"><a href="https://example.com/?id=Ab+C==&amp;share_id=first_value">Video_guide</a></p>',
+	revisionId: 16
+});
+roundTripPlugin.fetchLarkDocumentMarkdown = async () => ({
+	doc: "doc-token",
+	content: '# Note\n\n# Original heading\n\nSee <cite doc-id="linkedDoc" file-type="docx" title="Linked_note" type="doc"></cite>.\n\n[Video\\_guide](https://example.com/?id=Ab+C==&share_id=first_value)',
+	revisionId: 16
+});
+let roundTripState;
+roundTripPlugin.persistDocumentState = async (state) => { roundTripState = state; };
+roundTripPlugin.sleep = async () => { throw new Error("equivalent content should confirm immediately"); };
+await roundTripPlugin.saveRemoteDocumentStateFromBaselineAfterExpectedRevision(
+	"doc-token", [], roundTripBaseline, 16, { mode: "save", path: "docs/note.md" }
+);
+assert.equal(roundTripState.revisionId, 16);
+assert.deepEqual(roundTripState.units.map((unit) => unit.blockId), ["heading", "reference", "video"]);
+
 const noticePlugin = createPlugin();
 noticePlugin.autoSyncRunningPaths = new Set();
 noticePlugin.autoSyncPendingPaths = new Set();

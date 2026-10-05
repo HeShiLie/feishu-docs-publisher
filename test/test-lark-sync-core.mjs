@@ -805,6 +805,47 @@ const differentCiteQuoteSignature = await createSyncContentSignature([
 	'<blockquote><p>由 <cite doc-id="different-document" type="doc"></cite> 生成<br/>任务总数：10<br/>核心原则：每个任务只对应一个可独立验证的交付物</p></blockquote>'
 ].join("\n"));
 assert.equal(isSyncContentSignatureEquivalent(differentCiteQuoteSignature, localCiteQuoteSignature), false);
+const localInlineCite = '<cite type="doc" doc-id="linkedDoc"></cite>';
+const exportedInlineCite = '<cite doc-id="linkedDoc" file-type="docx" title="Linked_note" type="doc"></cite>';
+for (const body of [
+	`See ${localInlineCite}.`,
+	`- See ${localInlineCite}.`,
+	`| Reference |\n| --- |\n| ${localInlineCite} |`,
+	`> See ${localInlineCite}.`
+]) {
+	const expected = await createSyncContentSignature(`# Note\n\n${body}`);
+	const exported = await createSyncContentSignature(`# Note\n\n${body.replace(localInlineCite, exportedInlineCite)}`);
+	assert.ok(isSyncContentSignatureEquivalent(exported, expected), "cite metadata must not change the referenced document");
+	const changed = await createSyncContentSignature(`# Note\n\n${body.replace(localInlineCite, exportedInlineCite.replace('linkedDoc', 'otherDoc'))}`);
+	assert.equal(isSyncContentSignatureEquivalent(changed, expected), false, "different reference targets must remain changes");
+}
+const encodedVideoLink = "[Video\\_guide](https://example.com/video?id=Ab%2BC%3D%3D&share_id=first_value)";
+const exportedVideoLink = "[Video\\_guide](https://example.com/video?id=Ab+C==&share_id=first_value)";
+const encodedVideoSignature = await createSyncContentSignature(`# Note\n\n${encodedVideoLink}`);
+assert.ok(isSyncContentSignatureEquivalent(
+	await createSyncContentSignature(`# Note\n\n${exportedVideoLink}`), encodedVideoSignature
+), "Feishu decodes query values when exporting Markdown");
+for (const changedLink of [
+	exportedVideoLink.replace('Ab+C==', 'Ab+D=='),
+	exportedVideoLink.replace('first_value', 'firstvalue'),
+	exportedVideoLink.replace('example.com/video', 'example.com/other'),
+	exportedVideoLink.replace('Video\\_guide', 'Other video')
+]) {
+	assert.equal(isSyncContentSignatureEquivalent(
+		await createSyncContentSignature(`# Note\n\n${changedLink}`), encodedVideoSignature
+	), false, "real link or label changes must not be hidden by formatting normalization");
+}
+for (const [left, right] of [
+	['https://example.com/?q=a%26b%3Dc', 'https://example.com/?q=a&b=c'],
+	['https://example.com/a%2Fb', 'https://example.com/a/b'],
+	['https://example.com/?q=a+b', 'https://example.com/?q=a%20b']
+]) {
+	assert.equal(isSyncContentSignatureEquivalent(
+		await createSyncContentSignature(`# Note\n\n[Link](${left})`),
+		await createSyncContentSignature(`# Note\n\n[Link](${right})`)
+	), false, "query boundaries, path separators and spaces must remain distinct");
+}
+assert.ok(await createSyncContentSignature('# Note\n\n[Link](https://example.com/?q=bad%escape)'), "malformed escapes must not crash confirmation");
 const paragraphUrlSignature = await createSyncContentSignature([
 	"# Note",
 	"",
