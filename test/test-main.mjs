@@ -716,7 +716,7 @@ const duplicateLocalRecovery = createPublishingPlugin();
 duplicateLocalRecovery.listRemoteDocuments = recoverPlugin.listRemoteDocuments;
 const duplicatePrepared = preparedForRecovery();
 const otherPrepared = { ...preparedForRecovery(), file: { ...fakeNote, path:"docs/Other.md" } };
-await assert.rejects(duplicateLocalRecovery.recoverPreparedBindings([duplicatePrepared,otherPrepared], parentsForRecovery, true), /同名冲突/);
+await assert.rejects(duplicateLocalRecovery.recoverPreparedBindings([duplicatePrepared,otherPrepared], parentsForRecovery, true), /多个同名文件/);
 assert.deepEqual(duplicateLocalRecovery.settings.documentBindings, {}, "local title ambiguity must bind neither note");
 const legacyRecovery = createPublishingPlugin();
 legacyRecovery.listRemoteDocuments = async () => [{title:"Note",token:"existing-note",nodeToken:"legacy-node",url:"https://example.feishu.cn/wiki/legacy-node"}];
@@ -724,7 +724,7 @@ const legacyNote = { ...fakeNote, path: "legacy.md" };
 legacyRecovery.app.vault.getMarkdownFiles = () => [legacyNote];
 legacyRecovery.app.metadataCache.getFileCache = () => ({frontmatter:{lark_doc_url:"https://example.feishu.cn/wiki/legacy-node"}});
 legacyRecovery.runLarkCli = async () => ({ok:true,data:{token:"existing-note"}});
-await assert.rejects(legacyRecovery.recoverPreparedBindings([preparedForRecovery()], parentsForRecovery, true), /同名冲突/);
+await assert.rejects(legacyRecovery.recoverPreparedBindings([preparedForRecovery()], parentsForRecovery, true), /多个同名文件/);
 assert.deepEqual(legacyRecovery.settings.documentBindings, {});
 const duplicateRemoteRecovery = createPublishingPlugin();
 duplicateRemoteRecovery.listRemoteDocuments = async () => [
@@ -864,7 +864,7 @@ const uncertainFolderPlugin = createPublishingPlugin();
 let uncertainFolderCreates=0;
 uncertainFolderPlugin.createRemoteFolderPage = async () => { uncertainFolderCreates++; throw new Error("folder create timeout"); };
 await assert.rejects(uncertainFolderPlugin.ensureRemoteFolderPath({kind:"my_library",token:""},"Root"),/folder create timeout/);
-await assert.rejects(uncertainFolderPlugin.ensureRemoteFolderPath({kind:"my_library",token:""},"Root"),/结果待确认/);
+await assert.rejects(uncertainFolderPlugin.ensureRemoteFolderPath({kind:"my_library",token:""},"Root"),/尚未确认/);
 assert.equal(uncertainFolderCreates,1);
 
 const aliasMismatchPlugin = createPublishingPlugin();

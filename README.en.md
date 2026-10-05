@@ -10,7 +10,7 @@ It is useful when Obsidian is your local source of truth and Feishu/Lark is wher
 
 - **Single-note sync**: publish or update the current Markdown note as a Feishu/Lark Docx document.
 - **Folder sync**: right-click a folder and sync all Markdown and PDF files while preserving the folder hierarchy.
-- **Published links manager**: open, copy, and edit remote bindings from context menus; search all recorded publications from the command palette or settings.
+- **Published files**: use the paper-plane ribbon icon to view published files, copy links, or sync; file context menus also let you set Feishu/Lark links.
 - **PDF uploads**: preserve folder hierarchy, skip unchanged PDFs, and overwrite changed PDFs using the same remote file token.
 - **Independent bindings**: plugin data stores bindings even with frontmatter disabled.
 - **Block-level incremental sync**: update only changed blocks for small edits, without rewriting the whole document, so Feishu/Lark history can be preserved.
@@ -71,7 +71,7 @@ which lark-cli
 
 ### Single-note Sync
 
-Open a Markdown file, then click the ribbon icon or use the file context menu:
+Open a Markdown file, then use the file context menu or command palette:
 
 - `Lark: Sync to Feishu/Lark`: create a document when no binding exists, or update the bound remote document.
 - `Lark: Overwrite to Feishu/Lark`: clear and rewrite the remote document with the local Markdown content.
@@ -115,13 +115,13 @@ Detailed design: 02-database.md
 
 Local notes remain unchanged.
 
-### Published Links Manager
+### Published Files
 
-File and folder context menus provide open, copy, and manage-binding actions. Folder menus also open publications scoped to that folder. Use `Manage published links` from the command palette or settings to search all recorded Markdown, PDF, and folder bindings, open local files, sync, or disconnect a local association.
+Click the paper-plane ribbon icon to open `Published files`. The command palette offers the same action. A folder context menu can show only that folder's records.
 
-The editor checks the remote resource type and access before saving. Management actions change plugin data only; they do not edit notes or frontmatter, or move/delete remote content.
+Each row shows the filename and local path. Use `Open in Feishu` to view the file. The `More` menu offers copy link, open local file, sync, set link, and remove saved link. Removing a saved link keeps both local and Feishu files.
 
-Older versions did not record document bindings with frontmatter disabled. `Recover existing bindings` matches Markdown documents uniquely inside associated remote folders. Folder sync performs the same check before creating a document. Ambiguous local or remote titles require an explicit existing URL. Recovery only reads remote folders; clean up existing remote duplicates manually in Feishu/Lark.
+Older versions may not have recorded links when frontmatter was disabled. Use `Find existing links` to match note filenames inside associated Feishu folders. If several files match, set the link manually. This action never creates Feishu files.
 
 ### PDF Files
 

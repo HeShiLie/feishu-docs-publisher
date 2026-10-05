@@ -1,4 +1,4 @@
-import { App, ButtonComponent, Modal, Setting, TextComponent } from "obsidian";
+import { App, ButtonComponent, Menu, Modal, Setting, TextComponent } from "obsidian";
 
 export type PublishedLinkKind = "markdown" | "pdf" | "folder";
 
@@ -31,42 +31,44 @@ export interface PublishedLinksHost {
 
 const MESSAGES = {
 	en: {
-		title: "Published links", intro: "Manage local bindings to published Markdown, PDF, and folders.",
-		localOnly: "Disconnecting removes only the binding in plugin settings. Notes and remote documents or folders remain unchanged.",
-		search: "Search", searchHint: "Search paths, names, URLs, or tokens", scope: "Folder scope",
-		all: "All folders", refresh: "Refresh", loading: "Loading published links…",
-		recover: "Recover existing bindings", recovering: "Recovering existing bindings…",
-		recoveryHint: "Read remote folder children and bind uniquely matched local filenames in plugin settings. Ambiguous matches need manual binding. Notes remain unchanged; no remote content is created.",
-		empty: "No published links in this scope.", noMatches: "No published links match your search.",
-		count: (visible: number, total: number) => `${visible} of ${total} published links`,
-		markdown: "Markdown", pdf: "PDF", folder: "Folder", open: "Open link", copy: "Copy link",
-		copied: "Link copied.", edit: "Edit binding", local: "Open local file", sync: "Sync",
-		synced: "Sync completed.", disconnect: "Disconnect local binding", cancel: "Cancel", save: "Save binding",
-		editTitle: "Edit published binding", url: "Published URL",
-		urlHint: "Paste the Feishu/Lark URL. The plugin validates it before saving.",
-		editHelp: "Save the binding in plugin settings. Notes remain unchanged; the remote document is not moved or deleted.",
-		saving: "Saving…", removing: "Disconnecting…", working: "Working…",
-		noUrl: "No URL stored. Edit the binding to add one.", invalidUrl: "The stored link must be an HTTP or HTTPS URL.",
+		title: "Published files",
+		localOnly: "Remove this saved link? Local files and Feishu files will be kept.",
+		search: "Search", searchHint: "Search files or links", scope: "Folder",
+		all: "All folders", refresh: "Refresh", loading: "Loading…",
+		recover: "Find existing links", recovering: "Finding existing links…",
+		recoveryHint: "Find matching filenames in Feishu. If several files match, set the link manually.",
+		empty: "No published files yet.", noMatches: "No matching files.",
+		count: (visible: number, total: number) => visible === total ? `${total} items` : `${visible} of ${total} items`,
+		markdown: "Note", pdf: "PDF", folder: "Folder", open: "Open in Feishu", copy: "Copy link", more: "More",
+		copied: "Link copied.", edit: "Set link", local: "Open local file", sync: "Sync",
+		synced: "Sync completed.", disconnect: "Remove saved link", cancel: "Cancel", save: "Save",
+		editTitle: "Set Feishu link", url: "Feishu/Lark link",
+		urlHint: "Paste the link to this file or folder.",
+		editHelp: "Future syncs will update the file at this link.",
+		folderEditHelp: "Future folder syncs will upload here.",
+		saving: "Saving…", removing: "Removing…", working: "Working…",
+		noUrl: "Link not set", invalidUrl: "The link must use HTTP or HTTPS.",
 		failed: "Action failed. Please try again.", previous: "Previous", next: "Next",
 		page: (page: number, pages: number) => `Page ${page} of ${pages}`
 	},
 	"zh-CN": {
-		title: "已发布链接", intro: "管理已发布 Markdown、PDF 和文件夹的本地绑定。",
-		localOnly: "断开绑定仅移除插件设置中的绑定，不会修改笔记，也不会修改或删除远端文档或文件夹。",
-		search: "搜索", searchHint: "搜索路径、名称、URL 或 token", scope: "文件夹范围",
-		all: "所有文件夹", refresh: "刷新", loading: "正在加载已发布链接…",
-		recover: "恢复已有发布绑定", recovering: "正在恢复已有发布绑定…",
-		recoveryHint: "读取远端文件夹子项，将与本地文件名唯一匹配的绑定保存到插件设置。有歧义的匹配需手动绑定，不修改笔记，也不创建远端内容。",
-		empty: "此范围内没有已发布链接。", noMatches: "没有匹配的已发布链接。",
-		count: (visible: number, total: number) => `${visible} / ${total} 个已发布链接`,
-		markdown: "Markdown", pdf: "PDF", folder: "文件夹", open: "打开链接", copy: "复制链接",
-		copied: "链接已复制。", edit: "编辑绑定", local: "打开本地文件", sync: "同步",
-		synced: "同步完成。", disconnect: "断开本地绑定", cancel: "取消", save: "保存绑定",
-		editTitle: "编辑发布绑定", url: "已发布 URL",
-		urlHint: "粘贴飞书 / Lark URL，插件会在保存前验证。",
-		editHelp: "绑定保存到插件设置，不修改笔记，也不会移动或删除远端文档。",
-		saving: "正在保存…", removing: "正在断开…", working: "正在处理…",
-		noUrl: "尚未保存 URL，可编辑绑定添加链接。", invalidUrl: "已保存链接必须使用 HTTP 或 HTTPS。",
+		title: "已发布文件",
+		localOnly: "移除此链接记录？本地文件和飞书文件都会保留。",
+		search: "搜索", searchHint: "搜索文件或链接", scope: "文件夹",
+		all: "所有文件夹", refresh: "刷新", loading: "正在加载…",
+		recover: "查找已有链接", recovering: "正在查找已有链接…",
+		recoveryHint: "在飞书中查找同名文件。如有多个同名文件，请手动设置链接。",
+		empty: "还没有已发布文件。", noMatches: "没有找到匹配的文件。",
+		count: (visible: number, total: number) => visible === total ? `共 ${total} 项` : `${visible} / ${total} 项`,
+		markdown: "笔记", pdf: "PDF", folder: "文件夹", open: "在飞书打开", copy: "复制链接", more: "更多",
+		copied: "已复制链接。", edit: "设置链接", local: "打开本地文件", sync: "同步",
+		synced: "同步完成。", disconnect: "移除链接记录", cancel: "取消", save: "保存",
+		editTitle: "设置飞书链接", url: "飞书链接",
+		urlHint: "粘贴此文件或文件夹的飞书链接。",
+		editHelp: "后续同步会更新此链接对应的文件。",
+		folderEditHelp: "后续目录同步会上传到这里。",
+		saving: "正在保存…", removing: "正在移除…", working: "正在处理…",
+		noUrl: "未设置链接", invalidUrl: "链接必须以 HTTP 或 HTTPS 开头。",
 		failed: "操作失败，请重试。", previous: "上一页", next: "下一页",
 		page: (page: number, pages: number) => `第 ${page} / ${pages} 页`
 	}
@@ -136,17 +138,15 @@ export class PublishedLinksModal extends Modal {
 		this.modalEl.addClass("feishu-lark-published-modal");
 		this.contentEl.empty();
 		this.titleEl.setText(t.title);
-		this.contentEl.createEl("p", { text: t.intro });
-		this.contentEl.createEl("p", { text: t.localOnly, cls: "setting-item-description" });
 		const toolbar = new Setting(this.contentEl).setName(t.scope).setDesc(normalizePath(this.folderPath) || t.all)
 			.addButton((button) => {
 				this.refreshButton = button.setButtonText(t.refresh).onClick(() => { void this.refresh(); });
 			});
 		if (this.host.recoverBindings) {
 			toolbar.addButton((button) => {
-				this.recoveryButton = button.setButtonText(t.recover).onClick(() => { void this.recoverBindings(); });
+				this.recoveryButton = button.setButtonText(t.recover).setTooltip(t.recoveryHint).onClick(() => { void this.recoverBindings(); });
+				button.buttonEl.setAttribute("aria-label", t.recover);
 			});
-			this.contentEl.createEl("p", { text: t.recoveryHint, cls: "setting-item-description" });
 		}
 		new Setting(this.contentEl).setName(t.search).addSearch((search) => {
 			search.setPlaceholder(t.searchHint).setValue(this.query).onChange((value) => {
@@ -156,6 +156,7 @@ export class PublishedLinksModal extends Modal {
 			});
 			search.inputEl.setAttribute("aria-label", t.searchHint);
 		});
+		toolbar.settingEl.addClass("feishu-lark-published-toolbar");
 		this.feedbackEl = createFeedback(this.contentEl);
 		this.countEl = createFeedback(this.contentEl);
 		this.listEl = this.contentEl.createDiv({ cls: "feishu-lark-published-list" });
@@ -246,23 +247,20 @@ export class PublishedLinksModal extends Modal {
 	private renderEntry(entry: PublishedLinkEntry): void {
 		const t = messages(this.host);
 		const controls: { button: ButtonComponent; disabled: boolean }[] = [];
-		const setting = new Setting(this.listEl).setName(entry.name || entry.path || "/")
-			.setDesc(`${t[entry.kind]} · ${entry.path || "/"}\n${entry.url || t.noUrl}`);
+		const setting = new Setting(this.listEl).setName(entry.name || entry.path.split("/").pop() || "/")
+			.setDesc(`${t[entry.kind]} · ${entry.path || "/"}${entry.url ? "" : ` · ${t.noUrl}`}`);
 		setting.settingEl.addClass("feishu-lark-published-entry");
-		const addAction = (label: string, action: () => MaybePromise<void>, disabled = false): void => {
-			setting.addButton((button) => {
-				controls.push({ button, disabled });
-				button.setButtonText(label).setDisabled(disabled || this.pending.has(entry.id))
-					.onClick(() => { void this.runAction(entry, action, controls); });
-			});
+		const actions: { label: string; icon: string; action: () => MaybePromise<void>; disabled: boolean }[] = [];
+		const addAction = (label: string, icon: string, action: () => MaybePromise<void>, disabled = false): void => {
+			actions.push({ label, icon, action, disabled });
 		};
-		addAction(t.open, async () => {
+		addAction(t.open, "external-link", async () => {
 			const url = new URL(entry.url);
 			if (url.protocol !== "https:" && url.protocol !== "http:") throw new Error(t.invalidUrl);
 			if (this.host.openUrl) await this.host.openUrl(entry.url);
 			else this.contentEl.ownerDocument.defaultView?.open(entry.url, "_blank", "noopener,noreferrer");
 		}, !entry.url);
-		addAction(t.copy, async () => {
+		addAction(t.copy, "copy", async () => {
 			if (this.host.copyUrl) await this.host.copyUrl(entry.url);
 			else {
 				const clipboard = this.contentEl.ownerDocument.defaultView?.navigator.clipboard;
@@ -271,17 +269,38 @@ export class PublishedLinksModal extends Modal {
 			}
 			if (this.active) showFeedback(this.feedbackEl, t.copied);
 		}, !entry.url);
-		addAction(t.edit, () => {
+		addAction(t.edit, "link", () => {
 			new PublishedLinkBindingModal(this.app, this.host, entry, () => this.refresh()).open();
 		});
-		if (this.host.openLocalFile && entry.kind !== "folder") addAction(t.local, () => this.host.openLocalFile!(entry));
-		if (this.host.sync) addAction(t.sync, async () => {
+		if (this.host.openLocalFile && entry.kind !== "folder") addAction(t.local, "file", () => this.host.openLocalFile!(entry));
+		if (this.host.sync) addAction(t.sync, "refresh-cw", async () => {
 			await this.host.sync!(entry);
 			await this.refresh();
 			if (this.active) showFeedback(this.feedbackEl, t.synced);
 		});
-		addAction(t.disconnect, () => {
+		addAction(t.disconnect, "unlink", () => {
 			new DisconnectPublishedLinkModal(this.app, this.host, entry, () => this.refresh()).open();
+		});
+		const open = actions[0]!;
+		setting.addButton((button) => {
+			controls.push({ button, disabled: open.disabled });
+			button.setButtonText(open.label).setDisabled(open.disabled || this.pending.has(entry.id))
+				.onClick(() => { void this.runAction(entry, open.action, controls); });
+		});
+		setting.addButton((button) => {
+			controls.push({ button, disabled: false });
+			button.setIcon("ellipsis").setTooltip(t.more).setDisabled(this.pending.has(entry.id)).onClick((event) => {
+				if (!this.active || this.pending.has(entry.id)) return;
+				const menu = new Menu();
+				for (const item of actions.slice(1)) {
+					if (item.label === t.disconnect) menu.addSeparator();
+					menu.addItem((menuItem) => menuItem.setTitle(item.label).setIcon(item.icon).setDisabled(item.disabled)
+						.onClick(() => { if (this.active) void this.runAction(entry, item.action, controls); }));
+				}
+				menu.showAtMouseEvent(event);
+			});
+			button.buttonEl.setAttribute("aria-label", `${t.more} · ${entry.name || entry.path}`);
+			button.buttonEl.setAttribute("aria-haspopup", "menu");
 		});
 	}
 
@@ -376,11 +395,11 @@ export class PublishedLinkBindingModal extends PublishedLinkActionModal {
 		this.active = true;
 		const t = messages(this.host);
 		this.titleEl.setText(t.editTitle);
-		this.contentEl.createEl("p", { text: this.entry.path || "/" });
-		this.contentEl.createEl("p", { text: t.editHelp, cls: "setting-item-description" });
+		this.contentEl.createEl("p", { text: this.entry.path || "/", cls: "feishu-lark-published-path" });
+		this.contentEl.createEl("p", { text: this.entry.kind === "folder" ? t.folderEditHelp : t.editHelp, cls: "setting-item-description" });
 		let url = this.entry.url;
 		let input: TextComponent | undefined;
-		new Setting(this.contentEl).setName(t.url).setDesc(t.urlHint).addText((text) => {
+		const urlSetting = new Setting(this.contentEl).setName(t.url).setDesc(t.urlHint).addText((text) => {
 			this.input = input = text;
 			text.setValue(url).setPlaceholder("https://…").onChange((value) => {
 				url = value;
@@ -389,6 +408,7 @@ export class PublishedLinkBindingModal extends PublishedLinkActionModal {
 			text.inputEl.setAttribute("aria-label", t.url);
 			text.inputEl.type = "url";
 		});
+		urlSetting.settingEl.addClass("feishu-lark-published-url");
 		this.addActions(t.save, t.saving, () => this.host.saveBindingUrl(this.entry, url.trim()));
 		if (input) {
 			input.inputEl.setAttribute("aria-describedby", this.feedbackEl.id = `published-link-error-${Date.now()}`);
@@ -402,7 +422,7 @@ class DisconnectPublishedLinkModal extends PublishedLinkActionModal {
 		this.active = true;
 		const t = messages(this.host);
 		this.titleEl.setText(t.disconnect);
-		this.contentEl.createEl("p", { text: this.entry.path || "/" });
+		this.contentEl.createEl("p", { text: this.entry.path || "/", cls: "feishu-lark-published-path" });
 		this.contentEl.createEl("p", { text: t.localOnly });
 		this.addActions(t.disconnect, t.removing, () => this.host.removeBinding(this.entry), true);
 	}

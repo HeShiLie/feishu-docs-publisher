@@ -378,11 +378,11 @@ class RemoteStateRefreshError extends LocalizedSyncError {
 
 const MESSAGES = {
 	"zh-CN": {
-		menuManagePublishedLinks: "管理已发布链接",
+		menuManagePublishedLinks: "已发布文件",
 		menuOpenPublishedLink: "打开飞书链接",
 		menuCopyPublishedLink: "复制飞书链接",
-		menuEditPublishedLink: "管理飞书绑定",
-		invalidPublishedLink: "请输入对应的飞书 / Lark 文档、PDF 或文件夹 URL。",
+		menuEditPublishedLink: "设置飞书链接",
+		invalidPublishedLink: "请输入此文件或文件夹的飞书链接。",
 		menuCopiedPublishedLink: "已复制飞书链接。",
 		commandSyncCurrentNote: "同步到飞书",
 		commandOverwriteCurrentNote: "覆盖同步到飞书",
@@ -457,10 +457,10 @@ const MESSAGES = {
 		installPrePushHookButton: "安装 hook"
 	},
 	en: {
-		menuManagePublishedLinks: "Manage published links",
+		menuManagePublishedLinks: "Published files",
 		menuOpenPublishedLink: "Open Feishu/Lark link",
 		menuCopyPublishedLink: "Copy Feishu/Lark link",
-		menuEditPublishedLink: "Manage Feishu/Lark binding",
+		menuEditPublishedLink: "Set Feishu/Lark link",
 		invalidPublishedLink: "Enter the matching Feishu/Lark document, PDF, or folder URL.",
 		menuCopiedPublishedLink: "Feishu/Lark link copied.",
 		commandSyncCurrentNote: "Sync to Feishu/Lark",
@@ -614,8 +614,8 @@ export default class LarkCliSyncPlugin extends Plugin {
 				.catch((error: unknown) => new Notice(String(error)));
 		}));
 
-		this.addRibbonIcon(LARK_RIBBON_ICON_ID, this.t("ribbonSyncCurrentNote"), () => {
-			void this.syncCurrentNote();
+		this.addRibbonIcon(LARK_RIBBON_ICON_ID, this.t("menuManagePublishedLinks"), () => {
+			this.openPublishedLinks();
 		});
 
 		this.registerEvent(this.app.workspace.on("file-menu", (menu: Menu, file) => {
@@ -1782,7 +1782,7 @@ exec "${nodePath}" "${scriptPath}" "$@"
 			if (this.settings.pendingDocumentCreates?.[file.path]) {
 				throw new LocalizedSyncError(this.settings.language === "en"
 					? "A previous document creation has an uncertain result. Bind its existing URL or disconnect the pending local record before publishing again."
-					: "上次创建文档的结果尚未确认。请管理绑定并指定已有链接，或断开待确认的本地记录后再发布。");
+					: "上次上传结果尚未确认。请先设置已有飞书链接；确认未上传后，可移除链接记录再重试。");
 			}
 			(this.settings.pendingDocumentCreates ??= {})[file.path] = { title, startedAt: new Date().toISOString() };
 			try { await this.saveSettingsWithoutClearingCommandCache(); }
@@ -3099,7 +3099,7 @@ exec "${nodePath}" "${scriptPath}" "$@"
 			if (this.settings.pendingFolderCreates?.[bindingKey]) {
 				throw new LocalizedSyncError(this.settings.language === "en"
 					? `Folder creation is unconfirmed: ${partialPath}. Manage its existing remote binding before retrying.`
-					: `目录创建结果待确认：${partialPath}。请先管理对应目录的远端绑定。`);
+					: `尚未确认目录是否已创建：${partialPath}。请先设置此目录的飞书链接。`);
 			}
 			(this.settings.pendingFolderCreates ??= {})[bindingKey] = segments[index] || "Untitled";
 			try { await this.saveSettingsWithoutClearingCommandCache(); }
@@ -3995,8 +3995,7 @@ exec "${nodePath}" "${scriptPath}" "$@"
 		}
 		menu.addItem((item) => item.setTitle(this.t("menuEditPublishedLink")).setIcon("link")
 			.onClick(() => {
-				if (kind !== "folder" && this.getPublishedEntry(path, kind)) this.openPublishedLinks(path);
-				else new PublishedLinkBindingModal(this.app, this.publishedLinksHost(), entry, () => {}).open();
+				new PublishedLinkBindingModal(this.app, this.publishedLinksHost(), entry, () => {}).open();
 			}));
 		if (kind === "folder") {
 			menu.addItem((item) => item.setTitle(this.t("menuManagePublishedLinks")).setIcon("list")
@@ -4275,8 +4274,8 @@ exec "${nodePath}" "${scriptPath}" "$@"
 			if (matches.length !== 1 || alreadyBound || (localCounts.get(`${parent.kind}:${parent.token}:${title}`) || 0) > 1) {
 				conflicts += 1;
 				if (strict) throw new LocalizedSyncError(this.settings.language === "en"
-					? `Ambiguous remote title for ${prepared.file.path}. Use Manage Feishu/Lark binding to choose its existing URL before syncing.`
-					: `${prepared.file.path} 在远端有同名冲突。请右键“管理飞书绑定”，指定已有文档链接后再同步。`);
+					? `Several files match ${prepared.file.path} in Feishu. Use Set Feishu/Lark link before syncing.`
+					: `飞书中有多个同名文件：${prepared.file.path}。请右键选择“设置飞书链接”后再同步。`);
 				continue;
 			}
 			if (!match.url) {
@@ -4312,8 +4311,8 @@ exec "${nodePath}" "${scriptPath}" "$@"
 		}
 		const { recovered, conflicts } = await this.recoverPreparedBindings(files, parents, false);
 		return this.settings.language === "en"
-			? `Recovered ${recovered} Markdown bindings; ${conflicts} conflicts need a URL selected manually.`
-			: `已恢复 ${recovered} 篇 Markdown 的绑定；${conflicts} 个同名冲突需手动指定链接。`;
+			? `Found ${recovered} note links. ${conflicts} files need a link set manually.`
+			: `已找到 ${recovered} 篇笔记的链接。${conflicts} 个同名文件需手动设置链接。`;
 	}
 
 	t(key: MessageKey, params: Record<string, string> = {}): string {
@@ -4375,10 +4374,6 @@ class LarkCliSyncSettingTab extends PluginSettingTab {
 						await this.plugin.saveSettings();
 					});
 				});
-
-		new Setting(containerEl).setName(this.plugin.t("menuManagePublishedLinks"))
-			.addButton((button) => button.setButtonText(this.plugin.t("menuManagePublishedLinks"))
-				.onClick(() => this.plugin.openPublishedLinks()));
 
 		const contentSectionEl = this.createSection(containerEl, "settingsSectionContent");
 		new Setting(contentSectionEl)

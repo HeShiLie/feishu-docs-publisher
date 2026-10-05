@@ -31,29 +31,43 @@
 }
 
 .feishu-lark-published-modal {
-	width: min(960px, 92vw);
+	width: min(760px, 92vw);
 }
 
-.feishu-lark-published-entry {
+.feishu-lark-published-entry,
+.feishu-lark-published-toolbar {
 	flex-wrap: wrap;
 	gap: var(--size-4-2);
 }
 
 .feishu-lark-published-entry .setting-item-info {
-	flex: 1 1 240px;
+	flex: 1 1 220px;
 	min-width: 0;
 	overflow-wrap: anywhere;
 }
 
-.feishu-lark-published-entry .setting-item-description {
-	white-space: pre-wrap;
+.feishu-lark-published-entry .setting-item-control {
+	flex: 0 0 auto;
+	gap: var(--size-4-2);
 }
 
-.feishu-lark-published-entry .setting-item-control {
-	flex: 1 1 360px;
+.feishu-lark-published-toolbar .setting-item-control {
 	flex-wrap: wrap;
-	justify-content: flex-start;
 	gap: var(--size-4-2);
+}
+
+.feishu-lark-published-url {
+	flex-direction: column;
+	align-items: stretch;
+	gap: var(--size-4-2);
+}
+
+.feishu-lark-published-url .setting-item-control input {
+	width: 100%;
+}
+
+.feishu-lark-published-path {
+	overflow-wrap: anywhere;
 }
 
 .feishu-lark-published-feedback:empty {

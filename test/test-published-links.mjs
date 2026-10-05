@@ -23,11 +23,28 @@ export class ButtonComponent {
   constructor(parent) { this.buttonEl = parent.createEl('button'); }
   setButtonText(value) { this.buttonEl.setText(value); return this; }
   setDisabled(value) { this.buttonEl.disabled = value; return this; }
+  setIcon(value) { this.icon = value; return this; }
+  setTooltip(value) { this.tooltip = value; return this; }
   setWarning() { this.warning = true; return this; }
   setCta() { return this; }
   onClick(callback) { this.callback = callback; return this; }
   // Native buttons support Enter/Space without custom keyboard listeners.
   activate(key = 'Enter') { if (!this.buttonEl.disabled && ['Enter', ' '].includes(key)) this.callback(); }
+}
+export class Menu {
+  constructor() { this.items = []; }
+  addSeparator() { return this; }
+  addItem(callback) {
+    const item = { buttonEl: { tag: 'menuitem' },
+      setTitle(value) { this.buttonEl.textContent = value; return this; },
+      setIcon() { return this; },
+      setDisabled(value) { this.buttonEl.disabled = value; return this; },
+      onClick(callback) { this.callback = callback; return this; },
+      activate() { if (!this.buttonEl.disabled) this.callback(); }
+    };
+    callback(item); this.items.push(item); return this;
+  }
+  showAtMouseEvent() { globalThis.__ui.menu = this; }
 }
 export class TextComponent {
   constructor(parent) { this.inputEl = parent.createEl('input'); }
@@ -61,9 +78,14 @@ globalThis.__ui = { settings: [], modals: [], focused: undefined };
 const flush = () => new Promise((resolve) => setImmediate(resolve));
 const rows = (modal) => globalThis.__ui.settings.filter((setting) => modal.listEl.children.includes(setting.settingEl));
 const action = (setting, label) => {
-	const button = setting.buttons.find((control) => control.buttonEl.textContent === label);
+	let button = setting.buttons.find((control) => control.buttonEl.textContent === label);
+  if (!button) {
+    const more = setting.buttons.find((control) => control.icon === 'ellipsis');
+    more?.activate();
+    button = globalThis.__ui.menu?.items.find((item) => item.buttonEl.textContent === label);
+  }
 	assert.ok(button, `Missing button: ${label}`);
-	assert.equal(button.buttonEl.tag, "button", "Actions retain native keyboard semantics");
+	assert.ok(["button", "menuitem"].includes(button.buttonEl.tag), "Actions use native buttons or menus");
 	return button;
 };
 const entries = [
@@ -92,13 +114,15 @@ const host = {
 const modal = new PublishedLinksModal({}, host, "docs");
 modal.open();
 await flush();
-assert.equal(modal.titleEl.textContent, "Published links");
+assert.equal(modal.titleEl.textContent, "Published files");
 assert.equal(rows(modal).length, 3);
-assert.equal(modal.countEl.textContent, "3 of 3 published links");
-const toolbarFor = (target) => globalThis.__ui.settings.find((setting) => target.contentEl.children.includes(setting.settingEl) && setting.nameEl.textContent === "Folder scope");
+assert.ok(rows(modal).every(row => row.buttons.length === 2), "Each row has open and more controls only");
+assert.equal(rows(modal)[1].buttons[1].buttonEl.attributes["aria-haspopup"], "menu");
+assert.equal(modal.countEl.textContent, "3 items");
+const toolbarFor = (target) => globalThis.__ui.settings.find((setting) => target.contentEl.children.includes(setting.settingEl) && setting.nameEl.textContent === "Folder");
 assert.equal(toolbarFor(modal).buttons.length, 1, "Recovery is hidden when the host does not provide it");
 const search = globalThis.__ui.settings.find((setting) => setting.search).search;
-assert.equal(search.inputEl.attributes["aria-label"], "Search paths, names, URLs, or tokens");
+assert.equal(search.inputEl.attributes["aria-label"], "Search files or links");
 search.inputEl.focus();
 search.type("ABC123");
 assert.equal(rows(modal).length, 1);
@@ -110,23 +134,23 @@ assert.equal(modal.feedbackEl.textContent, "Clipboard permission denied");
 assert.ok(modal.feedbackEl.classes.has("is-error"));
 assert.equal(copy.buttonEl.disabled, false, "Failed actions become retryable");
 search.type("absent");
-assert.equal(modal.listEl.children[0].textContent, "No published links match your search.");
+assert.equal(modal.listEl.children[0].textContent, "No matching files.");
 search.type("manual");
-assert.equal(action(rows(modal)[0], "Open link").buttonEl.disabled, true);
+assert.equal(action(rows(modal)[0], "Open in Feishu").buttonEl.disabled, true);
 assert.equal(action(rows(modal)[0], "Copy link").buttonEl.disabled, true);
 
 // Edit is also available for an unbound PDF; host errors preserve input and focus.
-action(rows(modal)[0], "Edit binding").activate();
+action(rows(modal)[0], "Set link").activate();
 await flush();
 const editor = globalThis.__ui.modals.at(-1);
 assert.ok(editor instanceof PublishedLinkBindingModal);
 const editorSettings = globalThis.__ui.settings.filter((setting) => editor.contentEl.children.includes(setting.settingEl));
 const urlInput = editorSettings.find((setting) => setting.text).text;
 assert.equal(globalThis.__ui.focused, urlInput.inputEl);
-assert.equal(urlInput.inputEl.attributes["aria-label"], "Published URL");
+assert.equal(urlInput.inputEl.attributes["aria-label"], "Feishu/Lark link");
 assert.equal(urlInput.inputEl.attributes["aria-describedby"], editor.feedbackEl.id);
 urlInput.type("invalid-url");
-const save = action(editorSettings.at(-1), "Save binding");
+const save = action(editorSettings.at(-1), "Save");
 save.activate();
 await flush();
 assert.equal(editor.closed, undefined);
@@ -144,18 +168,18 @@ assert.ok(refreshed >= 2);
 
 // Disconnect requires explicit local-only confirmation; cancel never calls the host.
 search.type("Alpha");
-action(rows(modal)[0], "Disconnect local binding").activate();
+action(rows(modal)[0], "Remove saved link").activate();
 await flush();
 let confirmation = globalThis.__ui.modals.at(-1);
-assert.match(confirmation.contentEl.children[1].textContent, /plugin settings.*Notes and remote/);
+assert.match(confirmation.contentEl.children[1].textContent, /Local files and Feishu files will be kept/);
 let footer = globalThis.__ui.settings.findLast((setting) => confirmation.contentEl.children.includes(setting.settingEl));
 action(footer, "Cancel").activate();
 assert.equal(removed, 0);
-action(rows(modal)[0], "Disconnect local binding").activate();
+action(rows(modal)[0], "Remove saved link").activate();
 await flush();
 confirmation = globalThis.__ui.modals.at(-1);
 footer = globalThis.__ui.settings.findLast((setting) => confirmation.contentEl.children.includes(setting.settingEl));
-const disconnect = action(footer, "Disconnect local binding");
+const disconnect = action(footer, "Remove saved link");
 assert.equal(disconnect.warning, true);
 disconnect.activate();
 disconnect.activate();
@@ -171,7 +195,7 @@ const syncModal = new PublishedLinksModal({}, {
 syncModal.open();
 await flush();
 let markdown = rows(syncModal).find((setting) => setting.nameEl.textContent === "Alpha");
-action(markdown, "Open link").activate();
+action(markdown, "Open in Feishu").activate();
 await flush();
 assert.equal(opened, entries[1].url);
 action(markdown, "Sync").activate();
@@ -189,9 +213,9 @@ const unsafeModal = new PublishedLinksModal({}, {
 });
 unsafeModal.open();
 await flush();
-action(rows(unsafeModal)[0], "Open link").activate();
+action(rows(unsafeModal)[0], "Open in Feishu").activate();
 await flush();
-assert.equal(unsafeModal.feedbackEl.textContent, "The stored link must be an HTTP or HTTPS URL.");
+assert.equal(unsafeModal.feedbackEl.textContent, "The link must use HTTP or HTTPS.");
 unsafeModal.close();
 
 // Bound lists stay small, with keyboard-operable pagination.
@@ -225,16 +249,16 @@ const recoveryHost = {
 const recoveryModal = new PublishedLinksModal({}, recoveryHost, "/docs/");
 recoveryModal.open();
 await flush();
-assert.equal(recoveryModal.listEl.children[0].textContent, "No published links in this scope.");
-assert.ok(recoveryModal.contentEl.children.some((element) => /remote folder children.*uniquely matched local filenames.*Ambiguous matches need manual binding/.test(element.textContent)));
-const recover = action(toolbarFor(recoveryModal), "Recover existing bindings");
+assert.equal(recoveryModal.listEl.children[0].textContent, "No published files yet.");
+assert.match(action(toolbarFor(recoveryModal), "Find existing links").tooltip, /matching filenames.*several files/);
+const recover = action(toolbarFor(recoveryModal), "Find existing links");
 recover.activate();
 recover.activate(" ");
 assert.equal(recoveryCalls, 1);
 assert.equal(recoveryScope, "docs");
 assert.equal(recover.buttonEl.disabled, true);
 assert.equal(action(toolbarFor(recoveryModal), "Refresh").buttonEl.disabled, true);
-assert.equal(recoveryModal.feedbackEl.textContent, "Recovering existing bindings…");
+assert.equal(recoveryModal.feedbackEl.textContent, "Finding existing links…");
 recoveredEntries = [entries[1]];
 completeRecovery("Recovered 1 binding; 2 ambiguous matches need manual binding.");
 await flush();
@@ -264,9 +288,9 @@ const chineseRecovery = new PublishedLinksModal({}, {
 });
 chineseRecovery.open();
 await flush();
-const chineseToolbar = globalThis.__ui.settings.find((setting) => chineseRecovery.contentEl.children.includes(setting.settingEl) && setting.nameEl.textContent === "文件夹范围");
-assert.ok(chineseRecovery.contentEl.children.some((element) => /有歧义的匹配需手动绑定/.test(element.textContent)));
-action(chineseToolbar, "恢复已有发布绑定").activate();
+const chineseToolbar = globalThis.__ui.settings.find((setting) => chineseRecovery.contentEl.children.includes(setting.settingEl) && setting.nameEl.textContent === "文件夹");
+assert.match(action(chineseToolbar, "查找已有链接").tooltip, /多个同名文件.*手动设置链接/);
+action(chineseToolbar, "查找已有链接").activate();
 await flush();
 assert.equal(rootScope, "", "The unscoped manager asks the host to recover all mapped folders");
 assert.equal(chineseRecovery.feedbackEl.textContent, "已恢复 0 个绑定。");
@@ -288,8 +312,8 @@ assert.equal(modal.contentEl.children.length, 0);
 const chinese = new PublishedLinksModal({}, { ...host, getLanguage: () => "zh-CN", listEntries: () => [] });
 chinese.open();
 await flush();
-assert.equal(chinese.titleEl.textContent, "已发布链接");
-assert.equal(chinese.listEl.children[0].textContent, "此范围内没有已发布链接。");
+assert.equal(chinese.titleEl.textContent, "已发布文件");
+assert.equal(chinese.listEl.children[0].textContent, "还没有已发布文件。");
 chinese.close();
 delete globalThis.__ui;
-console.log("Published links UI tests passed");
+console.log("Published files UI tests passed");
