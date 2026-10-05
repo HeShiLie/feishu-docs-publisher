@@ -788,7 +788,8 @@ const folderPdf = {path:"Root/Scan.pdf",name:"Scan.pdf",extension:"pdf"};
 combinedFolderPlugin.app.vault.getMarkdownFiles = () => [folderNote];
 combinedFolderPlugin.app.vault.getFiles = () => [folderNote,folderPdf];
 combinedFolderPlugin.withDeferredLarkSyncStateSave = async (callback) => callback();
-let directoryCreates=0,noteCreates=0;
+let directoryCreates=0,noteCreates=0,pageListInserts=0;
+let folderPageXml = '<title id="root-title">Root</title>';
 const pdfDestinations=[];
 combinedFolderPlugin.runLarkCli = async (args) => {
 	if (args[1] === "+node-create") { directoryCreates++; return {ok:true,data:{node_token:"root-node",url:"https://example.feishu.cn/wiki/root-node"}}; }
@@ -796,6 +797,14 @@ combinedFolderPlugin.runLarkCli = async (args) => {
 	if (args[1] === "+node-list") return {ok:true,data:{nodes:[],has_more:false}};
 	if (args[1] === "+create") { noteCreates++; return {ok:true,data:{document:{document_id:"folder-note",url:"https://example.feishu.cn/docx/folder-note"}}}; }
 	if (args[1] === "+inspect") return {ok:true,data:{token:"folder-note",type:"docx"}};
+	if (args[1] === "+fetch") return {ok:true,data:{document:{document_id:"root-doc",content:folderPageXml,revision_id:1 + pageListInserts}}};
+	if (args[1] === "+update") {
+		assert.equal(args[args.indexOf("--command") + 1], "block_insert_after");
+		assert.equal(args[args.indexOf("--content") + 1], "<sub-page-list/>");
+		pageListInserts++;
+		folderPageXml += '<sub-page-list id="child-pages"/>';
+		return {ok:true,data:{document:{revision_id:1 + pageListInserts}}};
+	}
 	throw new Error("Unexpected CLI command: "+args.join(" "));
 };
 combinedFolderPlugin.updateLarkDocument = async () => ({});
@@ -803,6 +812,7 @@ combinedFolderPlugin.syncPdfFileUnlocked = async (file,parent) => pdfDestination
 await Promise.all([combinedFolderPlugin.publishFolderInternal("Root"),combinedFolderPlugin.publishFolderInternal("Root")]);
 assert.equal(directoryCreates,1);
 assert.equal(noteCreates,1);
+assert.equal(pageListInserts,1,"repeated folder sync reuses the native child-page list");
 assert.deepEqual(pdfDestinations,[{path:"Root/Scan.pdf",token:"root-node"},{path:"Root/Scan.pdf",token:"root-node"}]);
 const pdfOnlyPlugin = createPublishingPlugin();
 pdfOnlyPlugin.app.vault.getFiles = () => [folderPdf];
@@ -866,6 +876,71 @@ uncertainFolderPlugin.createRemoteFolderPage = async () => { uncertainFolderCrea
 await assert.rejects(uncertainFolderPlugin.ensureRemoteFolderPath({kind:"my_library",token:""},"Root"),/folder create timeout/);
 await assert.rejects(uncertainFolderPlugin.ensureRemoteFolderPath({kind:"my_library",token:""},"Root"),/尚未确认/);
 assert.equal(uncertainFolderCreates,1);
+
+// Native lists are inserted without rebuilding the parent page or managing links.
+const pageListPlugin = createPublishingPlugin();
+const pageListCommands = [];
+let pageListContent = '<title id="title">Parent</title><p id="body">Manual content</p><p id="manual-ref"><cite type="doc" doc-id="manual-doc"></cite></p>';
+const originalPageListContent = pageListContent;
+pageListPlugin.fetchLarkDocumentWithIds = async () => ({ doc: "parent-doc", content: pageListContent, revisionId: 9 });
+pageListPlugin.runLarkCli = async (args) => {
+	pageListCommands.push(args);
+	pageListContent += '<sub-page-list id="native-list"></sub-page-list>';
+	return { ok: true, data: { document: { revision_id: 9 } } };
+};
+const pageListBinding = { token: "parent-node", url: "https://example.feishu.cn/wiki/parent-node" };
+await pageListPlugin.ensureFolderPageList(pageListBinding, "Root");
+await pageListPlugin.ensureFolderPageList(pageListBinding, "Root");
+assert.equal(pageListCommands.length, 1);
+assert.deepEqual(pageListCommands[0], ["docs", "+update", "--api-version", "v2", "--as", "user",
+	"--doc", "parent-doc", "--command", "block_insert_after", "--block-id", "-1",
+	"--doc-format", "xml", "--content", "<sub-page-list/>", "--revision-id", "9", "--json"]);
+assert.equal(pageListContent, originalPageListContent + '<sub-page-list id="native-list"></sub-page-list>');
+
+const scopedPageLists = createPublishingPlugin();
+scopedPageLists.settings.folderBindings = {
+	"target|wiki|wiki-root|Root": { token: "root-page", url: "", containerKind: "wiki" },
+	"target|wiki|wiki-root|Root/Sub": { token: "sub-page", url: "", containerKind: "wiki" },
+	"target|wiki|wiki-root|Root/Sub/Deep": { token: "deep-page", url: "", containerKind: "wiki" },
+	"target|wiki|wiki-root|Root/Disconnected": { token: "disconnected", url: "", containerKind: "wiki" },
+	"target|wiki|wiki-root|Root-other": { token: "outside", url: "", containerKind: "wiki" },
+	"target|wiki|different-root|Root": { token: "different-root", url: "", containerKind: "wiki" },
+	"target|drive|drive-root|Root": { token: "drive-folder", url: "", containerKind: "drive" }
+};
+scopedPageLists.settings.disconnectedFolders = { "Notes/Root/Disconnected": true };
+const indexedPages = [];
+scopedPageLists.ensureFolderPageList = async (binding, path) => indexedPages.push({ token: binding.token, path });
+await scopedPageLists.syncFolderPageLists("Notes/Root", "Root", { kind: "wiki", token: "wiki-root" });
+assert.deepEqual(indexedPages, [
+	{ token: "root-page", path: "Notes/Root" },
+	{ token: "sub-page", path: "Notes/Root/Sub" },
+	{ token: "deep-page", path: "Notes/Root/Sub/Deep" }
+]);
+await scopedPageLists.syncFolderPageLists("Notes/Root", "Root", { kind: "drive", token: "drive-root" });
+assert.equal(indexedPages.length, 3, "Drive folders have no document body to index");
+scopedPageLists.settings.folderBindings["target|wiki|bound-root|"] = { token: "bound-page", url: "", containerKind: "wiki" };
+await scopedPageLists.syncFolderPageLists("Bound", "", { kind: "wiki", token: "bound-root" });
+assert.deepEqual(indexedPages.at(-1), { token: "bound-page", path: "Bound" }, "explicit folder bindings index the bound wiki page itself");
+
+const delayedPageList = createPublishingPlugin();
+let listFetches = 0, listWrites = 0;
+const listSleeps = [];
+delayedPageList.fetchLarkDocumentWithIds = async () => {
+	listFetches++;
+	return { doc: "parent-doc", content: listFetches === 1 ? '<title>Parent</title>' : '<sub-page-list id="native-list"/>',
+		revisionId: listFetches < 3 ? 9 : 10 };
+};
+delayedPageList.runLarkCli = async () => { listWrites++; return { ok: true, data: { document: { revision_id: 10 } } }; };
+delayedPageList.sleep = async (ms) => listSleeps.push(ms);
+await delayedPageList.ensureFolderPageList(pageListBinding, "Root");
+assert.equal(listWrites, 1, "confirmation retries only fetch, never insert another list");
+assert.deepEqual(listSleeps, [1500]);
+
+const unconfirmedPageList = createPublishingPlugin();
+unconfirmedPageList.fetchLarkDocumentWithIds = async () => ({ doc: "parent-doc", content: '<title>Parent</title>', revisionId: 9 });
+unconfirmedPageList.runLarkCli = async () => ({ ok: true, data: { document: { revision_id: 10 } } });
+unconfirmedPageList.sleep = async () => {};
+await assert.rejects(unconfirmedPageList.ensureFolderPageList(pageListBinding, "Root"), /远端更新尚未可见/);
 
 const aliasMismatchPlugin = createPublishingPlugin();
 aliasMismatchPlugin.syncState.documents["https://example.feishu.cn/wiki/alias"] = {...reusableState,doc:"oldDoc"};

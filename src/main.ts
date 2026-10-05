@@ -1455,11 +1455,48 @@ exec "${nodePath}" "${scriptPath}" "$@"
 				await this.syncPdfFileUnlocked(file, parent);
 			}
 			await this.syncFolderEntries(folderPath, folderRoot, entries);
+			await this.syncFolderPageLists(folderPath, folderRoot, rootParent);
 			this.savePublishedFolderBinding(folderPath, rootParent, folderRoot);
 			await this.saveSettings();
 
 			new Notice(this.t("noticePublishedFolderToLark", { count: String(entries.length + pdfFiles.length) }), 8000);
 		}));
+	}
+
+	private async syncFolderPageLists(folderPath: string, folderRoot: string, rootParent: RemoteParent): Promise<void> {
+		const remoteRoot = this.normalizeLinkPath(folderRoot);
+		for (const [key, binding] of Object.entries(this.settings.folderBindings)) {
+			const boundRoot = this.getFolderBindingRootParent(key);
+			const remotePath = this.getFolderBindingPath(key);
+			if (boundRoot.kind !== rootParent.kind || boundRoot.token !== rootParent.token
+				|| !this.isPathWithin(remotePath, remoteRoot)) continue;
+			const suffix = remotePath.slice(remoteRoot.length).replace(/^\/+/, "");
+			const localPath = [folderPath, suffix].filter(Boolean).join("/");
+			if (this.isFolderDisconnected(localPath)) continue;
+			const kind = binding.containerKind || rootParent.kind;
+			if (kind !== "wiki" && kind !== "my_library" && !binding.url.includes("/wiki/")) continue;
+			await this.ensureFolderPageList(binding, localPath);
+		}
+	}
+
+	private async ensureFolderPageList(binding: BoundLarkDocument, path: string): Promise<void> {
+		const doc = binding.url || binding.token;
+		const snapshot = await this.fetchLarkDocumentWithIds(doc);
+		if (/<sub-page-list\b/i.test(snapshot.content)) return;
+		const args = ["docs", "+update", "--api-version", "v2", "--as", "user",
+			"--doc", snapshot.doc || doc, "--command", "block_insert_after", "--block-id", DOCUMENT_END_BLOCK_ID,
+			"--doc-format", "xml", "--content", "<sub-page-list/>"];
+		if (snapshot.revisionId !== undefined) args.push("--revision-id", String(snapshot.revisionId));
+		args.push("--json");
+		const result = await this.runLarkCli(args);
+		const expectedRevision = result.data?.document?.revision_id;
+		for (let attempt = 0; attempt < STRICT_REMOTE_STATE_REFRESH_ATTEMPTS; attempt++) {
+			const remote = await this.fetchLarkDocumentWithIds(snapshot.doc || doc);
+			if (/<sub-page-list\b/i.test(remote.content)
+				&& (expectedRevision === undefined || (remote.revisionId !== undefined && remote.revisionId >= expectedRevision))) return;
+			if (attempt < STRICT_REMOTE_STATE_REFRESH_ATTEMPTS - 1) await this.sleep(STRICT_REMOTE_STATE_REFRESH_DELAY_MS);
+		}
+		throw new RemoteStateRefreshError(this.formatSyncFailure("folder", path, "remote-update-not-visible"), true);
 	}
 
 	private async resolveFolderParents(

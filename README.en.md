@@ -105,6 +105,10 @@ PNG, JPEG/JPG, GIF, WebP, and BMP are supported. Images must stay inside the cur
 
 Right-click a folder and choose `Lark: Sync folder to Feishu/Lark`. The plugin creates the matching remote hierarchy, syncs Markdown and PDF files, and rewrites Markdown internal links in the uploaded content.
 
+In a wiki (`/wiki/...`) or personal document library, each folder is itself a document. The plugin inserts a native Feishu/Lark sub-page list into folder documents at every level. For example, both `github-org` and its `profile` subfolder document have their own list. Feishu/Lark maintains the document links automatically; the plugin does not generate links or embed child document content.
+
+Repeated syncs reuse an existing list and preserve other content on the folder page. Drive targets (`/drive/folder/...`) use ordinary folders and do not receive a list.
+
 Supported link forms:
 
 ```md
