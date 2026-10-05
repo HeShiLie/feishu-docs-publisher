@@ -94,17 +94,20 @@ export function filterPublishedLinks(entries: readonly PublishedLinkEntry[], que
 	}).sort((left, right) => left.path.localeCompare(right.path) || left.id.localeCompare(right.id));
 }
 
-/** Keep only the outermost folder in a list; files inside nested folders remain visible. */
+/** Keep only outermost folders and hide every entry contained by those folders. */
 export function collapseNestedFolderEntries(entries: readonly PublishedLinkEntry[]): PublishedLinkEntry[] {
 	const folderPaths = entries
 		.filter((entry) => entry.kind === "folder")
 		.map((entry) => normalizePath(entry.path))
 		.filter(Boolean);
+	const outermostFolderPaths = folderPaths.filter((path) =>
+		!folderPaths.some((parentPath) => parentPath !== path && path.startsWith(parentPath + "/"))
+	);
 
 	return entries.filter((entry) => {
-		if (entry.kind !== "folder") return true;
 		const path = normalizePath(entry.path);
-		return !folderPaths.some((parentPath) => parentPath !== path && path.startsWith(parentPath + "/"));
+		if (entry.kind === "folder") return outermostFolderPaths.includes(path);
+		return !outermostFolderPaths.some((folderPath) => path.startsWith(folderPath + "/"));
 	});
 }
 
@@ -234,7 +237,8 @@ export class PublishedLinksModal extends Modal {
 		if (!this.active || !this.loaded) return;
 		this.renderRevision += 1;
 		const t = messages(this.host);
-		const scoped = collapseNestedFolderEntries(filterPublishedLinks(this.entries, "", this.folderPath));
+		const scopedEntries = filterPublishedLinks(this.entries, "", this.folderPath);
+		const scoped = this.query.trim() ? scopedEntries : collapseNestedFolderEntries(scopedEntries);
 		const filtered = filterPublishedLinks(scoped, this.query);
 		const pages = Math.max(1, Math.ceil(filtered.length / this.pageSize));
 		this.page = Math.min(this.page, pages - 1);

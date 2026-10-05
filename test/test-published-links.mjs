@@ -93,11 +93,13 @@ const entries = [
 	{ id: "md", kind: "markdown", path: "docs/Alpha.md", name: "Alpha", url: "https://example.com/docx/alpha", token: "abc123" },
 	{ id: "nested-folder", kind: "folder", path: "docs/nested", url: "https://example.com/wiki/nested" },
 	{ id: "pdf", kind: "pdf", path: "docs/nested/manual.pdf", url: "" },
-	{ id: "sibling", kind: "markdown", path: "docs-old/other.md", url: "https://example.com/docx/other" }
+	{ id: "sibling", kind: "markdown", path: "docs-old/other.md", url: "https://example.com/docx/other" },
+	{ id: "outside", kind: "markdown", path: "other/Outside.md", url: "https://example.com/docx/outside" }
 ];
 const scopedEntries = filterPublishedLinks(entries, "", "/docs/");
 assert.deepEqual(scopedEntries.map((entry) => entry.id), ["folder", "md", "nested-folder", "pdf"]);
-assert.deepEqual(collapseNestedFolderEntries(scopedEntries).map((entry) => entry.id), ["folder", "md", "pdf"]);
+assert.deepEqual(collapseNestedFolderEntries(scopedEntries).map((entry) => entry.id), ["folder"]);
+assert.deepEqual(collapseNestedFolderEntries(filterPublishedLinks(entries)).map((entry) => entry.id), ["folder", "sibling", "outside"]);
 assert.deepEqual(filterPublishedLinks(entries, "ALPHA abc123", "docs").map((entry) => entry.id), ["md"]);
 assert.deepEqual(filterPublishedLinks(entries, "manual", "docs\\nested").map((entry) => entry.id), ["pdf"]);
 
@@ -118,10 +120,10 @@ const modal = new PublishedLinksModal({}, host, "docs");
 modal.open();
 await flush();
 assert.equal(modal.titleEl.textContent, "Published files");
-assert.equal(rows(modal).length, 3);
+assert.equal(rows(modal).length, 1, "The unfiltered list keeps only the outermost folder");
 assert.ok(rows(modal).every(row => row.buttons.length === 2), "Each row has open and more controls only");
-assert.equal(rows(modal)[1].buttons[1].buttonEl.attributes["aria-haspopup"], "menu");
-assert.equal(modal.countEl.textContent, "3 items");
+assert.equal(rows(modal)[0].buttons[1].buttonEl.attributes["aria-haspopup"], "menu");
+assert.equal(modal.countEl.textContent, "1 items");
 const toolbarFor = (target) => globalThis.__ui.settings.find((setting) => target.contentEl.children.includes(setting.settingEl) && setting.nameEl.textContent === "Folder");
 assert.equal(toolbarFor(modal).buttons.length, 1, "Recovery is hidden when the host does not provide it");
 const search = globalThis.__ui.settings.find((setting) => setting.search).search;
@@ -197,6 +199,8 @@ const syncModal = new PublishedLinksModal({}, {
 }, "docs");
 syncModal.open();
 await flush();
+const syncSearch = globalThis.__ui.settings.find((setting) => syncModal.contentEl.children.includes(setting.settingEl) && setting.search).search;
+syncSearch.type("Alpha");
 let markdown = rows(syncModal).find((setting) => setting.nameEl.textContent === "Alpha");
 action(markdown, "Open in Feishu").activate();
 await flush();
