@@ -56,7 +56,7 @@ cp "/path/to/your/vault/.obsidian/plugins/feishu-lark-cli-sync/lark-sync-state.j
 
 ### 方式二：从 Release 手动安装
 
-1. 从 [GitHub Releases](https://github.com/totok22/obsidian-feishu-lark-cli-sync/releases) 下载 `main.js`、`manifest.json` 和 `styles.css`。
+1. 从 [GitHub Releases](https://github.com/totok22/feishu-docs-publisher/releases) 下载 `main.js`、`manifest.json` 和 `styles.css`。
 2. 在库中创建 `.obsidian/plugins/feishu-docs-publisher/`。
 3. 把这三个文件放入该目录。
 4. 重新加载社区插件并启用 **Feishu Docs Publisher**。
@@ -66,8 +66,8 @@ Git hook 脚本已嵌入 `main.js`，安装 hook 时会写入 `.git/hooks`。通
 ### 方式三：从源码构建
 
 ```bash
-git clone https://github.com/totok22/obsidian-feishu-lark-cli-sync.git
-cd obsidian-feishu-lark-cli-sync
+git clone https://github.com/totok22/feishu-docs-publisher.git
+cd feishu-docs-publisher
 npm install
 npm run build
 ./install.sh "/path/to/your/vault"
@@ -75,7 +75,7 @@ npm run build
 
 安装脚本会把构建结果复制到 `.obsidian/plugins/feishu-docs-publisher/`。如果该库已经安装过本插件的 hook，脚本会刷新 hook 辅助脚本。重启 Obsidian 后启用 **Feishu Docs Publisher**。
 
-GitHub 仓库名仍是 `obsidian-feishu-lark-cli-sync`。插件 ID 和库内目录名是 `feishu-docs-publisher`。
+GitHub 仓库名和库内插件目录都是 `feishu-docs-publisher`。
 
 ---
 

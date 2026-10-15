@@ -56,7 +56,7 @@ After this plugin is listed in the community plugin browser:
 
 ### Option 2: Manual installation from a release
 
-1. Download `main.js`, `manifest.json`, and `styles.css` from [GitHub Releases](https://github.com/totok22/obsidian-feishu-lark-cli-sync/releases).
+1. Download `main.js`, `manifest.json`, and `styles.css` from [GitHub Releases](https://github.com/totok22/feishu-docs-publisher/releases).
 2. Create `.obsidian/plugins/feishu-docs-publisher/` in your vault.
 3. Place the three files in that folder.
 4. Reload community plugins and enable **Feishu Docs Publisher**.
@@ -66,8 +66,8 @@ The Git hook scripts are embedded in `main.js` and are written into `.git/hooks`
 ### Option 3: Build from source
 
 ```bash
-git clone https://github.com/totok22/obsidian-feishu-lark-cli-sync.git
-cd obsidian-feishu-lark-cli-sync
+git clone https://github.com/totok22/feishu-docs-publisher.git
+cd feishu-docs-publisher
 npm install
 npm run build
 ./install.sh "/path/to/your/vault"
@@ -75,7 +75,7 @@ npm run build
 
 The install script copies the built plugin into `.obsidian/plugins/feishu-docs-publisher/`. If that vault already has a hook installed by this plugin, the script refreshes the hook helper scripts. Restart Obsidian and enable **Feishu Docs Publisher**.
 
-The GitHub repository is still named `obsidian-feishu-lark-cli-sync`. The plugin id and vault folder are `feishu-docs-publisher`.
+The GitHub repository and the vault plugin folder are both `feishu-docs-publisher`.
 
 ---
 
