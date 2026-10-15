@@ -1,8 +1,18 @@
-import fs from "fs";
+import { readFileSync, writeFileSync } from "node:fs";
 
-const manifest = JSON.parse(fs.readFileSync("manifest.json", "utf8"));
-const versions = JSON.parse(fs.readFileSync("versions.json", "utf8"));
+const targetVersion = process.env.npm_package_version;
 
-versions[manifest.version] = manifest.minAppVersion;
+if (!targetVersion) {
+	throw new Error("npm_package_version is unavailable. Run this script through npm version.");
+}
 
-fs.writeFileSync("versions.json", `${JSON.stringify(versions, null, "\t")}\n`);
+const manifest = JSON.parse(readFileSync("manifest.json", "utf8"));
+const { minAppVersion } = manifest;
+manifest.version = targetVersion;
+writeFileSync("manifest.json", `${JSON.stringify(manifest, null, "\t")}\n`);
+
+const versions = JSON.parse(readFileSync("versions.json", "utf8"));
+if (!(targetVersion in versions)) {
+	versions[targetVersion] = minAppVersion;
+	writeFileSync("versions.json", `${JSON.stringify(versions, null, "\t")}\n`);
+}

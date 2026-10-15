@@ -3,3 +3,4 @@ node_modules/
 .tmp-*.mjs
 dist/
 src/embedded-helpers.ts
+main.js

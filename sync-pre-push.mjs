@@ -54,7 +54,9 @@ import {
 
 const execFileAsync = promisify(execFile);
 
-const PLUGIN_ID = "feishu-lark-cli-sync";
+const PLUGIN_ID = "feishu-docs-publisher";
+// Archived plugin id. Used when this hook runs before Obsidian has copied data.json.
+const LEGACY_PLUGIN_ID = "feishu-lark-cli-sync";
 const LARK_SYNC_STATE_FILE_NAME = "lark-sync-state.json";
 const ZERO_REF = "0000000000000000000000000000000000000000";
 const MAX_STDERR_LENGTH = 1600;
@@ -72,7 +74,7 @@ const LARK_CLI_MAX_CONCURRENT_REQUESTS = 3;
 const LARK_CLI_REQUEST_INTERVAL_MS = 350;
 const LARK_CLI_RATE_LIMIT_RETRY_DELAYS_MS = [3000, 6000, 12000];
 const LARK_CLI_VERSION_ARGS = [["-version"], ["-v"]];
-const SYSTEM_NOTIFICATION_TITLE = "Feishu Lark CLI Sync";
+const SYSTEM_NOTIFICATION_TITLE = "Feishu Docs Publisher";
 const SYSTEM_NOTIFICATION_TIMEOUT_MS = 3000;
 const MAC_NOTIFICATION_EXECUTABLE_ENV = "FEISHU_LARK_CLI_SYNC_OSASCRIPT_PATH";
 const WINDOWS_NOTIFICATION_EXECUTABLE_ENV = "FEISHU_LARK_CLI_SYNC_POWERSHELL_PATH";
@@ -84,6 +86,7 @@ let checkedLarkCliVersionExecutable = "";
 let pendingLarkCliVersionExecutable = "";
 let pendingLarkCliVersionCheck = null;
 let settingsPath = "";
+let pluginDirectoryPath = "";
 let settingsWriteQueue = Promise.resolve();
 const changedSyncStateKeys = new Set();
 const removedSyncStateKeys = new Set();
@@ -413,10 +416,10 @@ async function unbindDeletedRemoteDocument(task, syncState) {
 
 function formatDeletedRemoteUnboundMessage(settings, path) {
 	if (readLanguage(settings) === "en") {
-		return `[Feishu Lark CLI Sync] remote Feishu/Lark document was deleted: ${path}\nBinding was removed automatically. Commit the change and push again.`;
+		return `[Feishu Docs Publisher] remote Feishu/Lark document was deleted: ${path}\nBinding was removed automatically. Commit the change and push again.`;
 	}
 
-	return `[Feishu Lark CLI Sync] 飞书文档远端已删除：${path}\n已自动解绑，请提交变更后重新 push。`;
+	return `[Feishu Docs Publisher] 飞书文档远端已删除：${path}\n已自动解绑，请提交变更后重新 push。`;
 }
 
 function shouldRetryPlanWithRefreshedState(plan) {
@@ -898,7 +901,7 @@ async function runWithConcurrency(items, limit, worker) {
 }
 
 async function withTempMarkdown(baseName, content, callback) {
-	const tempDir = await mkdtemp(join(tmpdir(), "feishu-lark-cli-sync-"));
+	const tempDir = await mkdtemp(join(tmpdir(), "feishu-docs-publisher-"));
 	const fileName = `${sanitizeFileName(baseName)}.md`;
 	const tempPath = join(tempDir, fileName);
 
@@ -920,8 +923,27 @@ function sanitizeFileName(name) {
 	return name.replace(/[\\/:*?"<>|]/g, "-").trim() || "note";
 }
 
+function pluginDirectory(repoRoot, pluginId) {
+	return join(repoRoot, ".obsidian", "plugins", pluginId);
+}
+
+function resolvePluginDirectory(repoRoot) {
+	const currentDirectory = pluginDirectory(repoRoot, PLUGIN_ID);
+	if (existsSync(join(currentDirectory, "data.json"))) {
+		return currentDirectory;
+	}
+
+	const legacyDirectory = pluginDirectory(repoRoot, LEGACY_PLUGIN_ID);
+	if (existsSync(join(legacyDirectory, "data.json"))) {
+		return legacyDirectory;
+	}
+
+	return currentDirectory;
+}
+
 async function readSettings(repoRoot) {
-	settingsPath = join(repoRoot, ".obsidian", "plugins", PLUGIN_ID, "data.json");
+	pluginDirectoryPath = resolvePluginDirectory(repoRoot);
+	settingsPath = join(pluginDirectoryPath, "data.json");
 	try {
 		const rawSettings = await readFile(settingsPath, "utf8");
 		const settings = JSON.parse(rawSettings);
@@ -1016,7 +1038,8 @@ async function writeSyncState(repoRoot, syncState, settings) {
 }
 
 function getSyncStatePath(repoRoot) {
-	return join(repoRoot, ".obsidian", "plugins", PLUGIN_ID, LARK_SYNC_STATE_FILE_NAME);
+	const directory = pluginDirectoryPath || resolvePluginDirectory(repoRoot);
+	return join(directory, LARK_SYNC_STATE_FILE_NAME);
 }
 
 function isValidSyncState(state) {

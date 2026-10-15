@@ -127,8 +127,11 @@ const PRE_PUSH_SCRIPT_NAME = "sync-pre-push.mjs";
 const PRE_PUSH_CORE_SCRIPT_NAME = "lark-sync-core.mjs";
 const LARK_CLI_COMMAND_SCRIPT_NAME = "lark-cli-command.mjs";
 const LARK_SYNC_STATE_FILE_NAME = "lark-sync-state.json";
-const PRE_PUSH_HOOK_MARKER = "Feishu Lark CLI Sync";
-const LARK_RIBBON_ICON_ID = "feishu-lark-cli-sync-ribbon";
+const PRE_PUSH_HOOK_MARKER = "Feishu Docs Publisher";
+const LEGACY_PRE_PUSH_HOOK_MARKER = "Feishu Lark CLI Sync";
+// Archived plugin id: copy its vault data forward and keep recognizing its Git hook.
+const LEGACY_PLUGIN_ID = "feishu-lark-cli-sync";
+const LARK_RIBBON_ICON_ID = "feishu-docs-publisher-ribbon";
 const LARK_RIBBON_ICON_SVG = `
 <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2"
 	stroke-linecap="round" stroke-linejoin="round">
@@ -411,7 +414,7 @@ const MESSAGES = {
 		noticeAutoSyncConfirmationTimedOut: "内容已提交，但远端状态确认超时：{path}\n请稍后检查飞书文档。",
 		errorNoDocumentToken: "lark-cli 没有返回文档 token 或 URL。",
 		errorInvalidDefaultTarget: "默认上传位置无效或当前飞书账号无权访问。\n请检查插件设置中的“默认上传位置”：{target}\n底层原因：{detail}",
-		settingsTitle: "Feishu Lark CLI Sync",
+		settingsTitle: "Feishu Docs Publisher",
 		settingsSectionGeneral: "常规",
 		settingsSectionContent: "内容",
 		settingsSectionSync: "同步",
@@ -488,7 +491,7 @@ const MESSAGES = {
 		noticeAutoSyncConfirmationTimedOut: "Content was submitted, but remote confirmation timed out: {path}\nCheck the Lark document shortly.",
 		errorNoDocumentToken: "lark-cli did not return a document token or URL.",
 		errorInvalidDefaultTarget: "Default upload target is invalid or inaccessible.\nCheck the Default target setting: {target}\nCause: {detail}",
-		settingsTitle: "Feishu Lark CLI Sync",
+		settingsTitle: "Feishu Docs Publisher",
 		settingsSectionGeneral: "General",
 		settingsSectionContent: "Content",
 		settingsSectionSync: "Sync",
@@ -569,6 +572,7 @@ export default class LarkCliSyncPlugin extends Plugin {
 
 	override async onload(): Promise<void> {
 		addIcon(LARK_RIBBON_ICON_ID, LARK_RIBBON_ICON_SVG);
+		await this.migrateLegacyPluginData();
 		await this.loadSettings();
 		this.syncState = await this.loadLarkSyncState();
 		await this.tryEnsureLarkSyncStateFile();
@@ -646,6 +650,51 @@ export default class LarkCliSyncPlugin extends Plugin {
 		}));
 
 		this.addSettingTab(new LarkCliSyncSettingTab(this.app, this));
+	}
+
+	private isOurPrePushHook(content: string): boolean {
+		return content.includes(PRE_PUSH_HOOK_MARKER) || content.includes(LEGACY_PRE_PUSH_HOOK_MARKER);
+	}
+
+	private async migrateLegacyPluginData(): Promise<void> {
+		const vaultPath = this.getVaultBasePath();
+		if (!vaultPath) {
+			return;
+		}
+
+		let currentDirectory: string;
+		try {
+			currentDirectory = this.getPluginDirectoryPath();
+		} catch {
+			return;
+		}
+
+		const legacyDirectory = join(vaultPath, this.app.vault.configDir, "plugins", LEGACY_PLUGIN_ID);
+		await this.copyLegacyPluginFileIfMissing(
+			join(legacyDirectory, "data.json"),
+			join(currentDirectory, "data.json")
+		);
+		await this.copyLegacyPluginFileIfMissing(
+			join(legacyDirectory, LARK_SYNC_STATE_FILE_NAME),
+			join(currentDirectory, LARK_SYNC_STATE_FILE_NAME)
+		);
+	}
+
+	private async copyLegacyPluginFileIfMissing(sourcePath: string, destinationPath: string): Promise<void> {
+		if (await this.pathExists(destinationPath) || !await this.pathExists(sourcePath)) {
+			return;
+		}
+
+		try {
+			await mkdir(dirname(destinationPath), { recursive: true });
+			await copyFile(sourcePath, destinationPath);
+		} catch (error) {
+			console.warn("[Feishu Docs Publisher] failed to copy legacy plugin data", {
+				sourcePath,
+				destinationPath,
+				error
+			});
+		}
 	}
 
 	async loadSettings(): Promise<void> {
@@ -1188,7 +1237,7 @@ export default class LarkCliSyncPlugin extends Plugin {
 					if (binding) {
 						await this.unbindDeletedRemoteDocument(file, binding);
 						new Notice(this.t("noticeRemoteDeletedUnbound", { path: file.path }), 10000);
-						console.warn("[Feishu Lark CLI Sync] remote document deleted; binding removed", {
+						console.warn("[Feishu Docs Publisher] remote document deleted; binding removed", {
 							path: file.path,
 							doc: getDocumentStateKey(binding.token || binding.url)
 						});
@@ -1200,11 +1249,11 @@ export default class LarkCliSyncPlugin extends Plugin {
 			}
 			if (effectiveError instanceof RemoteStateRefreshError && effectiveError.updateSubmitted) {
 				new Notice(this.t("noticeAutoSyncConfirmationTimedOut", { path: file.path }), 10000);
-				console.warn("[Feishu Lark CLI Sync] auto sync update submitted but confirmation timed out", effectiveError);
+				console.warn("[Feishu Docs Publisher] auto sync update submitted but confirmation timed out", effectiveError);
 			} else {
 				const errorMessage = effectiveError instanceof Error ? effectiveError.message : String(effectiveError);
 				new Notice(this.t("noticeAutoSyncFailed", { path: file.path, message: errorMessage }), 10000);
-				console.error("[Feishu Lark CLI Sync] auto sync failed", effectiveError);
+				console.error("[Feishu Docs Publisher] auto sync failed", effectiveError);
 			}
 		} finally {
 			this.autoSyncRunningPaths.delete(file.path);
@@ -1251,7 +1300,7 @@ export default class LarkCliSyncPlugin extends Plugin {
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
 			new Notice(this.t("noticeGitHookInstallFailed", { message }), 10000);
-			console.error("[Feishu Lark CLI Sync] install pre-push hook failed", error);
+			console.error("[Feishu Docs Publisher] install pre-push hook failed", error);
 		}
 	}
 
@@ -1264,7 +1313,7 @@ export default class LarkCliSyncPlugin extends Plugin {
 
 			await this.refreshPrePushHookHelpers(hookInfo.hooksDirectory);
 		} catch (error) {
-			console.warn("[Feishu Lark CLI Sync] failed to refresh pre-push hook helpers", error);
+			console.warn("[Feishu Docs Publisher] failed to refresh pre-push hook helpers", error);
 		}
 	}
 
@@ -1273,7 +1322,7 @@ export default class LarkCliSyncPlugin extends Plugin {
 			const hookInfo = await this.getPrePushHookInfo();
 			return hookInfo.status;
 		} catch (error) {
-			console.warn("[Feishu Lark CLI Sync] failed to check pre-push hook status", error);
+			console.warn("[Feishu Docs Publisher] failed to check pre-push hook status", error);
 			return "unknown";
 		}
 	}
@@ -1296,7 +1345,7 @@ export default class LarkCliSyncPlugin extends Plugin {
 		}
 
 		const hookContent = await readFile(hookPath, "utf8");
-		if (!hookContent.includes(PRE_PUSH_HOOK_MARKER)) {
+		if (!this.isOurPrePushHook(hookContent)) {
 			return { status: "not-installed", hooksDirectory };
 		}
 
@@ -1370,7 +1419,7 @@ export default class LarkCliSyncPlugin extends Plugin {
 			}
 		} catch (error) {
 			if (!this.isFileNotFoundError(error)) {
-				console.warn("[Feishu Lark CLI Sync] failed to load sync state", error);
+				console.warn("[Feishu Docs Publisher] failed to load sync state", error);
 			}
 		}
 
@@ -1423,7 +1472,7 @@ export default class LarkCliSyncPlugin extends Plugin {
 			if (!callbackError) {
 				throw error;
 			}
-			console.warn("[Feishu Lark CLI Sync] failed to flush deferred sync state", error);
+			console.warn("[Feishu Docs Publisher] failed to flush deferred sync state", error);
 		}
 
 		if (callbackError) {
@@ -1475,7 +1524,7 @@ export default class LarkCliSyncPlugin extends Plugin {
 			}
 		} catch (error) {
 			if (!this.isFileNotFoundError(error)) {
-				console.warn("[Feishu Lark CLI Sync] failed to read persisted sync state", error);
+				console.warn("[Feishu Docs Publisher] failed to read persisted sync state", error);
 			}
 		}
 
@@ -1520,7 +1569,7 @@ export default class LarkCliSyncPlugin extends Plugin {
 		try {
 			await this.ensureLarkSyncStateFile();
 		} catch (error) {
-			console.warn("[Feishu Lark CLI Sync] failed to initialize sync state file", error);
+			console.warn("[Feishu Docs Publisher] failed to initialize sync state file", error);
 		}
 	}
 
@@ -1530,7 +1579,7 @@ export default class LarkCliSyncPlugin extends Plugin {
 			this.syncState = state;
 			await this.saveLarkSyncState();
 		} catch (error) {
-			console.warn("[Feishu Lark CLI Sync] failed to repair sync state file", error);
+			console.warn("[Feishu Docs Publisher] failed to repair sync state file", error);
 		} finally {
 			this.syncState = previousState;
 		}
@@ -1585,11 +1634,11 @@ export default class LarkCliSyncPlugin extends Plugin {
 		}
 
 		const content = await readFile(hookPath, "utf8");
-		if (content.includes(PRE_PUSH_HOOK_MARKER)) {
+		if (this.isOurPrePushHook(content)) {
 			return "";
 		}
 
-		const backupHookPath = `${hookPath}.before-feishu-lark-cli-sync`;
+		const backupHookPath = `${hookPath}.before-feishu-docs-publisher`;
 		await copyFile(hookPath, backupHookPath);
 		await chmod(backupHookPath, 0o755);
 		return backupHookPath;
@@ -2860,7 +2909,7 @@ exec "${nodePath}" "${scriptPath}" "$@"
 		expectedRevisionId: number | undefined,
 		diagnostic: RemoteStateRefreshDiagnostic | undefined
 	): void {
-		console.warn("[Feishu Lark CLI Sync] remote state confirmation timed out", {
+		console.warn("[Feishu Docs Publisher] remote state confirmation timed out", {
 			doc: extractDocumentToken(doc) || doc,
 			attempts,
 			expectedRevisionId,
@@ -4148,7 +4197,7 @@ exec "${nodePath}" "${scriptPath}" "$@"
 		content: string,
 		callback: (file: { directory: string; fileName: string }) => Promise<T>
 	): Promise<T> {
-		const tempDir = await mkdtemp(join(tmpdir(), "feishu-lark-cli-sync-"));
+		const tempDir = await mkdtemp(join(tmpdir(), "feishu-docs-publisher-"));
 		const fileName = `${this.sanitizeFileName(baseName)}.md`;
 		const tempPath = join(tempDir, fileName);
 
@@ -4240,7 +4289,7 @@ exec "${nodePath}" "${scriptPath}" "$@"
 				? errorMessage
 				: this.t("noticeSyncFailed", { message: errorMessage });
 			new Notice(noticeMessage, 10000);
-			console.error("[Feishu Lark CLI Sync] operation failed", error);
+			console.error("[Feishu Docs Publisher] operation failed", error);
 		} finally {
 			notice.hide();
 		}

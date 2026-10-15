@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-PLUGIN_ID="feishu-lark-cli-sync"
+PLUGIN_ID="feishu-docs-publisher"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 VAULT_PATH="${1:-}"
@@ -32,7 +32,7 @@ fi
 PLUGIN_DIR="$VAULT_PATH/.obsidian/plugins/$PLUGIN_ID"
 mkdir -p "$PLUGIN_DIR"
 
-for file in manifest.json main.js lark-sync-core.mjs lark-cli-command.mjs README.md README.en.md sync-pre-push.mjs styles.css; do
+for file in manifest.json main.js lark-sync-core.mjs lark-cli-command.mjs README.md README_ZH.md sync-pre-push.mjs styles.css; do
   if [ ! -f "$REPO_DIR/$file" ]; then
     echo "缺少 $file，请先运行 npm install && npm run build / Missing $file, run npm install && npm run build first." >&2
     exit 1
@@ -45,7 +45,7 @@ chmod +x "$PLUGIN_DIR/sync-pre-push.mjs"
 
 HOOK_PATH="$VAULT_PATH/.git/hooks/pre-push"
 HOOK_DIR="$VAULT_PATH/.git/hooks"
-if [ -f "$HOOK_PATH" ] && grep -q "Feishu Lark CLI Sync" "$HOOK_PATH"; then
+if [ -f "$HOOK_PATH" ] && grep -Eq "Feishu Docs Publisher|Feishu Lark CLI Sync" "$HOOK_PATH"; then
   cp "$PLUGIN_DIR/sync-pre-push.mjs" "$HOOK_DIR/sync-pre-push.mjs"
   cp "$PLUGIN_DIR/lark-sync-core.mjs" "$HOOK_DIR/lark-sync-core.mjs"
   cp "$PLUGIN_DIR/lark-cli-command.mjs" "$HOOK_DIR/lark-cli-command.mjs"
@@ -53,5 +53,5 @@ if [ -f "$HOOK_PATH" ] && grep -q "Feishu Lark CLI Sync" "$HOOK_PATH"; then
 fi
 
 echo "已安装到 / Installed to: $PLUGIN_DIR"
-echo "请在 Obsidian 设置中启用 Feishu Lark CLI Sync。"
-echo "Enable Feishu Lark CLI Sync in Obsidian settings."
+echo "请在 Obsidian 设置中启用 Feishu Docs Publisher。"
+echo "Enable Feishu Docs Publisher in Obsidian settings."

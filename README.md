@@ -1,56 +1,87 @@
-# Feishu Lark CLI Sync
+# Feishu Docs Publisher
 
-[简体中文](https://github.com/wanghuan9/obsidian-feishu-lark-cli-sync/blob/main/README.md) | [English](https://github.com/wanghuan9/obsidian-feishu-lark-cli-sync/blob/main/README.en.md)
+English | [简体中文](./README_ZH.md)
 
-通过本机 `lark-cli` 将 Obsidian Markdown 笔记发布、同步到飞书 / Lark 云文档的桌面端插件。
+Publish Markdown notes, folders, and PDFs to Feishu/Lark Docs and keep them in sync through the local `lark-cli`.
 
-适合把 Obsidian 作为本地写作源，再把内容同步给团队在飞书 / Lark 中阅读、协作、评论的工作流。
+Use it when Obsidian is the local source of truth and Feishu/Lark is where the team reads, comments, and collaborates.
 
-Feishu Lark CLI Sync publishes and synchronizes Obsidian Markdown notes to Feishu / Lark cloud documents through the local `lark-cli`. It is designed for users who write in Obsidian and share the rendered result with their team in Feishu / Lark.
+---
 
-## 功能
+## Network & Third-Party Account Disclosures
 
-- **单篇同步**：将当前 Markdown 笔记创建或同步为飞书 / Lark Docx 文档。
-- **目录同步**：右键目录同步全部 Markdown 和 PDF 文件，并在飞书 / Lark 中保留目录层级。
-- **已发布文件**：点击左侧栏的纸飞机按钮，查看已发布文件、复制链接或同步；文件右键也可以设置飞书链接。
-- **PDF 上传**：目录中的 PDF 上传为原生文件，保留层级；重复上传时跳过未变化文件，内容变化时覆盖同一个远端文件。
-- **独立绑定记录**：绑定保存在插件数据中，关闭 frontmatter 后仍能手动同步和保存后同步。
-- **按块增量同步**：小改动只更新变动块，不重写整篇文档，可保留飞书 / Lark 的操作历史。
-- **全量覆盖同步**：需要完全以本地 Markdown 为准时，可清空并重写远端文档。
-- **自动同步策略**：默认使用自动策略；小改动按块增量同步，改动较大、结构复杂或无法安全增量时自动降级为全量覆盖。
-- **自动同步触发**：支持保存后同步，也支持 Git `pre-push` hook 在推送代码前同步已绑定文档。
-- **本地图片同步**：支持 Obsidian Wiki 图片和相对路径 Markdown 图片；图片文件单独变化时也会同步引用它的已绑定文档。
-- **内部链接改写**：上传正文中的目录内 Markdown 链接会改写成远端文档引用；已发布 PDF 的双链、嵌入和 Markdown 链接会改写成可点击的原生文件引用。
+- **Third-Party Account**: Sync requires a Feishu or Lark account signed in through the local [`lark-cli`](https://github.com/larksuite/cli) (`lark-cli auth login`). This plugin does not ask for an app secret.
+- **Network Access**: Publish, sync, overwrite, link lookup, and `lark-cli` version checks run the local `lark-cli`. That program sends HTTPS requests to the official Feishu/Lark Open APIs (`open.feishu.cn` for Feishu accounts, `open.larksuite.com` for Lark accounts). Requests run when you sync or publish, and also from save-triggered sync and the Git `pre-push` hook when those modes are enabled. There is no separate telemetry channel.
+- **Credential Storage**: Login credentials stay in the local `lark-cli` auth store. This plugin does not write app secrets or access tokens into notes, `data.json`, or logs. Document URLs and bindings are stored in plugin data, and optionally in note frontmatter when that setting is enabled.
 
-## 安装
+---
 
-### Obsidian 社区插件市场（推荐）
+## Origin & Credits
 
-插件发布到社区插件市场后，推荐通过 Obsidian 直接安装：
+Forked from [wanghuan9/obsidian-feishu-lark-cli-sync](https://github.com/wanghuan9/obsidian-feishu-lark-cli-sync) by huan.wang (wanghuan) under the MIT License. The original repository and the author's GitHub account are no longer available. The original "Feishu Lark CLI Sync" plugin was archived in the Obsidian community directory. This project continues from 0.1.26, maintained by [totok22](https://github.com/totok22), with added published-link management, PDF sync and dedup, and related sync fixes, under the new plugin ID `feishu-docs-publisher`. It is not officially affiliated with the original author. It is unrelated to [zktww/feishu-lark-sync](https://github.com/zktww/feishu-lark-sync) ("Feishu Lark Sync"), which is an independent codebase. The original copyright is retained in `LICENSE`.
 
-1. 打开 Obsidian → 设置 → 社区插件 → 浏览。
-2. 搜索 `Feishu Lark CLI Sync`。
-3. 点击安装并启用。
+---
 
-### 手动安装
+## Migrating from Feishu Lark CLI Sync
 
-如果暂时无法通过社区插件市场安装，可以下载源码后使用一键安装脚本：
+The plugin id changed from `feishu-lark-cli-sync` to `feishu-docs-publisher`, so Obsidian stores this plugin's data in a new folder. On desktop startup, if `.obsidian/plugins/feishu-docs-publisher/data.json` is not already present, the plugin copies `data.json` and `lark-sync-state.json` from `.obsidian/plugins/feishu-lark-cli-sync/` when those files exist. The old folder is left unchanged.
+
+Disable the archived plugin after the new one is enabled so the two copies do not sync the same notes.
+
+The Git `pre-push` hook reads the new folder when its `data.json` exists, and otherwise falls back to the old folder. Opening Obsidian once refreshes the hook helper scripts when the hook was installed by this plugin or its predecessor. Install the hook again from settings if the Git Hook status does not show as installed.
+
+To copy the files before opening Obsidian:
 
 ```bash
-git clone https://github.com/wanghuan9/obsidian-feishu-lark-cli-sync.git
+mkdir -p "/path/to/your/vault/.obsidian/plugins/feishu-docs-publisher"
+cp "/path/to/your/vault/.obsidian/plugins/feishu-lark-cli-sync/data.json" \
+  "/path/to/your/vault/.obsidian/plugins/feishu-docs-publisher/data.json"
+cp "/path/to/your/vault/.obsidian/plugins/feishu-lark-cli-sync/lark-sync-state.json" \
+  "/path/to/your/vault/.obsidian/plugins/feishu-docs-publisher/lark-sync-state.json"
+```
+
+Skip a file that does not exist. An existing file in the new folder is not overwritten.
+
+---
+
+## Installation
+
+### Option 1: Community plugins
+
+After this plugin is listed in the community plugin browser:
+
+1. Open **Settings → Community plugins**.
+2. Turn off Restricted mode and click **Browse**.
+3. Search for `Feishu Docs Publisher`, click **Install**, and then **Enable**.
+
+### Option 2: Manual installation from a release
+
+1. Download `main.js`, `manifest.json`, and `styles.css` from [GitHub Releases](https://github.com/totok22/obsidian-feishu-lark-cli-sync/releases).
+2. Create `.obsidian/plugins/feishu-docs-publisher/` in your vault.
+3. Place the three files in that folder.
+4. Reload community plugins and enable **Feishu Docs Publisher**.
+
+The Git hook scripts are embedded in `main.js` and are written into `.git/hooks` when you install the hook. A community or release install does not need extra script files in the plugin folder.
+
+### Option 3: Build from source
+
+```bash
+git clone https://github.com/totok22/obsidian-feishu-lark-cli-sync.git
 cd obsidian-feishu-lark-cli-sync
+npm install
+npm run build
 ./install.sh "/path/to/your/vault"
 ```
 
-把 `/path/to/your/vault` 替换成你的 Obsidian 仓库路径。不传路径时，脚本会提示你输入。
+The install script copies the built plugin into `.obsidian/plugins/feishu-docs-publisher/`. If that vault already has a hook installed by this plugin, the script refreshes the hook helper scripts. Restart Obsidian and enable **Feishu Docs Publisher**.
 
-安装完成后，重启 Obsidian，在设置 → 社区插件中启用 `Feishu Lark CLI Sync`。
+The GitHub repository is still named `obsidian-feishu-lark-cli-sync`. The plugin id and vault folder are `feishu-docs-publisher`.
 
-启用后可以在插件设置页配置 `lark-cli`、默认上传位置、同步策略和 Git hook。
+---
 
-## 使用前准备
+## Prerequisites
 
-先安装并登录 `lark-cli`：
+Install and log in to `lark-cli` first:
 
 ```bash
 npm install -g @larksuite/cli
@@ -59,40 +90,38 @@ lark-cli auth login
 lark-cli auth status
 ```
 
-请使用 `lark-cli >= 1.0.53`。旧版本可能导致创建的文档标题显示为 `Untitled`、同步报错等问题。如果版本过低，请升级：
+Use `lark-cli >= 1.0.53`. Older versions may create documents titled `Untitled` or fail during sync. Upgrade with:
 
 ```bash
 npm install -g @larksuite/cli@latest
 ```
 
-如果 Obsidian 找不到 `lark-cli`，在插件设置里的 `lark-cli 路径` 填写绝对路径：
+If Obsidian cannot find `lark-cli`, set its absolute path in plugin settings (`which lark-cli`).
 
-```bash
-which lark-cli
-```
+---
 
-## 使用
+## Usage
 
-### 单篇同步
+### Single-note sync
 
-Markdown、PDF 和文件夹的右键菜单统一提供四个入口：
+Markdown files, PDFs, and folders share four context-menu actions:
 
-- `Lark: 同步到飞书`：同步当前笔记、PDF 或目录；没有绑定时首次发布。
-- `Lark: 覆盖同步到飞书`：按本地内容覆盖，并清理对应远端父目录中的其他同名文档。
-- `Lark: 设置飞书链接`：绑定已有的飞书文档、PDF 或目录。
-- `Lark: 打开飞书链接`：打开已绑定的远端页面；没有链接时置灰。
+- `Lark: Sync to Feishu/Lark`: sync the selected note, PDF, or folder; publish it when no binding exists.
+- `Lark: Overwrite sync to Feishu/Lark`: overwrite from local content and remove other same-name documents in the corresponding remote parent.
+- `Lark: Set Feishu/Lark link`: bind an existing remote document, PDF, or folder.
+- `Lark: Open Feishu/Lark link`: open the bound remote page; disabled when no URL is available.
 
-命令面板中的“覆盖同步到飞书”执行相同的单篇覆盖操作。一个远端文件只能绑定一个本地文件；设置链接、恢复绑定和同步前都会检查。已有共享绑定时，需要先为冲突文件设置不同的链接。
+The command palette's `Overwrite sync to Feishu/Lark` performs the same single-note operation. A remote file may be bound to only one local file. Link assignment, binding recovery, and sync check for conflicts; existing shared bindings must be corrected before syncing.
 
-手动覆盖会优先保留已绑定文档。没有绑定时，会从同名文档中选择一个固定目标，先保存绑定并确认本地内容已写入，再删除同一远端父目录中的其他同名文档。普通同步、保存后同步和 Git hook 不清理同名文档。另一个本地文件已绑定的远端文档也不会被清理。
+Explicit overwrite retains the bound document. Without a binding, it chooses one stable existing match. The binding is saved and the local-content write confirmed before other same-name documents in that remote parent are deleted. Normal sync, save-triggered sync, and Git hooks do not delete duplicates. A document bound to another local file cannot be deleted as a duplicate.
 
-如果待删的 Wiki 文档还有子页面，插件会先把子页面移到保留文档下。目录覆盖会递归覆盖 Markdown 和 PDF，并将目录文档正文重置为原生子页面列表。Markdown 标题可以与文件名不同；如果同级笔记使用了相同文档标题，覆盖会停止，提示修改标题。
+Before deleting a duplicate wiki document, the plugin moves its child pages under the retained document. Folder overwrite recursively overwrites Markdown and PDF files and resets folder document bodies to native sub-page lists. If sibling Markdown notes use identical document titles, overwrite stops and asks you to use distinct titles.
 
-![Obsidian 操作入口](./docs/images/obsidian-actions.png)
+![Actions](./docs/images/obsidian-actions.png)
 
-同步方向是单向的：**Obsidian Markdown 是源内容，飞书 / Lark 文档是输出结果**。
+Sync is one-way from Obsidian to Feishu/Lark. The local Markdown note is the source.
 
-绑定会保存到插件数据文件。开启“写入 frontmatter 绑定信息”时，还会写入以下可选字段：
+Bindings are stored in plugin data. With “Write binding to frontmatter” enabled, this optional field is also written:
 
 ```yaml
 ---
@@ -100,142 +129,126 @@ lark_doc_url: "https://example.feishu.cn/docx/xxxx"
 ---
 ```
 
-### 本地图片
-
-支持以下本地图片写法：
+### Local images
 
 ```md
 ![[diagram.png]]
 ![[diagram.png|600]]
 ![[diagram.png|600x400]]
-![架构图](../assets/diagram.png)
+![Architecture](../assets/diagram.png)
 ```
 
-支持 PNG、JPEG/JPG、GIF、WebP 和 BMP。图片必须位于当前 Obsidian vault 内；HTTP(S) 图片继续由 Markdown 导入处理。保存后同步和 Git pre-push 都会在图片二进制单独变化时反查并同步引用文档。
+PNG, JPEG/JPG, GIF, WebP, and BMP are supported. Images must stay inside the current vault. HTTP(S) images continue through the Markdown import path. Save-after-sync and Git pre-push both sync bound notes that reference an image when only that image changes.
 
-### 目录同步
+### Folder sync
 
-对目录右键，选择 `Lark: 同步到飞书`。插件会在飞书 / Lark 中创建对应目录层级，同步目录下的 Markdown 和 PDF 文件，并把目录内 Markdown 链接改写成远端文档引用。
+Right-click a folder and choose `Lark: Sync to Feishu/Lark`. The plugin creates the matching remote hierarchy, syncs Markdown and PDF files, and rewrites Markdown internal links in the uploaded content.
 
-上传位置是 Wiki（`/wiki/...`）或个人文档库时，目录本身也是文档。插件会逐层在目录文档正文中插入飞书原生“子页面列表”。例如 `github-org` 和它下面的 `profile` 目录文档，各自都有一个列表。列表中的文档链接由飞书自动维护，插件不生成链接，也不展开子文档的正文。
+In a wiki (`/wiki/...`) or personal document library, each folder is itself a document. The plugin inserts a native Feishu/Lark sub-page list into folder documents at every level. Feishu/Lark maintains those document links; the plugin does not generate the links or embed child document content.
 
-普通目录同步会复用已有列表，并保留目录文档中的其他内容。覆盖目录时，会重置目录文档正文，只保留原生子页面列表。Drive 云盘（`/drive/folder/...`）使用普通文件夹，不插入列表。
+Normal folder sync reuses an existing list and preserves other content on the folder page. Folder overwrite resets the folder page body to its native sub-page list. Drive targets (`/drive/folder/...`) use ordinary folders and do not receive a list.
 
-支持的链接形式：
+Supported link forms:
 
 ```md
-详细设计见 02-database.md。
-[组件设计](03-components.md#section)
-[[04-api|接口设计]]
+Detailed design: 02-database.md
+[Component design](03-components.md#section)
+[[04-api|API design]]
 ```
 
-本地 Markdown 不会因为链接改写而被修改。
+Local notes remain unchanged.
 
-### 已发布文件
+### Published files
 
-点击左侧栏的纸飞机按钮，打开“已发布文件”。也可以在命令面板中选择“已发布文件”。复制链接、查看记录等操作集中在此窗口中。
+Click the paper-plane ribbon icon, or use the command palette, to open `Published files`. Copying links and browsing saved records are available in this window.
 
-列表显示文件名和本地路径。点击“在飞书打开”查看文件；“更多”菜单提供复制链接、打开本地文件、同步、设置链接和移除链接记录。移除记录后，本地文件和飞书文件都会保留。
+Each row shows the filename and local path. Use `Open in Feishu` to view the file. The `More` menu offers copy link, open local file, sync, set link, and remove saved link. Removing a saved link keeps both local and Feishu files.
 
-旧版本关闭 frontmatter 时，可能没有记录已发布文件的链接。点击“查找已有链接”，可以在已关联的飞书目录中查找同名笔记。如有多个同名文件，请手动设置链接。此操作不会创建飞书文件。
+Older versions may not have recorded links when frontmatter was disabled. Use `Find existing links` to match note filenames inside associated Feishu folders. If several files match, set the link manually. This action never creates Feishu files.
 
-### PDF 文件
+### PDF files
 
-PDF 会上传到对应的 Drive 文件夹或知识库节点。文件右键也可以单独上传 PDF；默认位置为空时，单个 PDF 上传到 Drive 根目录。
+Folder sync uploads PDFs as native files inside the matching Drive folders or wiki nodes. A PDF context menu can also upload one file; a blank default target uploads a standalone PDF to the Drive root.
 
-正文支持以下 PDF 引用：
+Supported PDF references:
 
 ```md
-[[规格书/报告.pdf]]
-![[规格书/报告.pdf]]
-[[报告.pdf|查看规格书]]
-![[报告.pdf#page=2]]
-[查看规格书](规格书/报告.pdf)
+[[papers/report.pdf]]
+![[papers/report.pdf]]
+[[report.pdf|Read the report]]
+![[report.pdf#page=2]]
+[Read the report](papers/report.pdf)
 ```
 
-目录同步会在 PDF 上传成功后，把这些引用改写成飞书 / Lark 的原生文件引用。单篇首次发布、手动同步和保存后同步也会复用已有 PDF 绑定。PDF 在其他目录时，先单独上传或在“设置飞书链接”中指定已有文件链接，再同步笔记。本地双链和嵌入语法保持原样。
+After uploading PDFs, folder sync rewrites these references into native Feishu/Lark file references. First-time single-note publishing, manual updates, and save-triggered sync also reuse existing PDF bindings. For a PDF outside the synced folder, upload it separately or bind its existing remote URL before syncing the note. Local wiki links and embeds remain unchanged.
 
-飞书显示远端 PDF 的实际文件名。别名、页码和预览尺寸不会保留；`![[报告.pdf]]` 也会显示为可点击的文件引用。PDF 不会转换成 Docx 或在正文中展开预览。未发布、上传待确认或找不到的 PDF 引用保持原样，代码示例也保持原样。同名文件使用 Obsidian 的链接解析结果，避免指向其他 PDF。
+Feishu/Lark displays the remote PDF filename. Aliases, page numbers, and preview dimensions are omitted; embeds also become clickable file references. PDFs are not converted to Docx or expanded into page previews. Unpublished, pending, missing, and code-example references stay literal. Duplicate filenames are resolved with Obsidian's link resolver.
 
-Git hook 同步也会复用 PDF 绑定并改写正文引用。hook 支持 Vault 完整路径和相对笔记的路径；跨目录的短文件名依赖 Obsidian 解析，请在 hook 场景写出路径。更新插件后，需要在设置页重新安装已有 hook。
+Git hooks also reuse PDF bindings and rewrite references with vault paths or paths relative to the note. Short filenames in other folders require Obsidian's resolver; include a path when using a hook.
 
-重复同步使用持久绑定和内容哈希。未变化时跳过上传，变化时按原有 file token 覆盖，保留链接。重命名本地文件或文件夹会迁移绑定，远端名称保持原样。PDF 通过手动操作或目录同步更新，保存后自动同步和 Git hook 仍只处理 Markdown 及其引用图片。
+Persistent bindings and content hashes skip unchanged PDFs. Changes overwrite the same file token and preserve its link. Local renames migrate the association while preserving the remote name. PDFs update through manual or folder sync; save-triggered sync and Git hooks still cover Markdown and referenced images only.
 
-手动覆盖 PDF 时，即使本地文件未变化，也会覆盖同一个远端文件。没有绑定时会先复用同名文件；上传成功后，再清理同一远端父目录中的其他同名 PDF。
+Explicit PDF overwrite replaces the same remote file even when the local file is unchanged. Without a binding, it first reuses a same-name file. After a successful upload, it removes other same-name PDFs from that remote parent.
 
-如果上传超时，插件会保留待确认记录，暂停盲目重传。确认飞书中已存在的文件后，可以通过“设置飞书链接”补上链接，再继续同步。确认未创建任何远端文件后，也可以移除待确认的链接记录，重新上传。
+An upload timeout keeps a pending record and stops blind retries. Reconcile the existing remote file through the binding editor before retrying. If no remote file was created, disconnect the pending local record and upload again.
 
-### 自动同步
+### Auto sync
 
-自动同步只处理已绑定文档。首次使用时，需要先在 Obsidian 中执行 `Lark: 同步到飞书` 发布文档，并保存绑定；后续保存后同步或 Git hook 才能识别并同步该文件。关闭 frontmatter 不影响绑定。
+Auto sync only handles already bound documents. Publish once with `Lark: Sync to Feishu/Lark` so the binding is saved. Later save-after-sync or Git hook sync can then update that file. Frontmatter is optional.
 
-#### 触发方式
+#### Trigger modes
 
-在设置中可选择：
+- `Off`: manual sync only.
+- `Sync after save`: while Obsidian is running, sync bound Markdown notes after file save events.
+- `Git pre-push hook`: sync bound Markdown notes before `git push`.
 
-- `关闭`：只手动同步。
-- `保存后同步`：Obsidian 运行期间，已绑定 Markdown 文件发生保存事件后自动同步。
-- `Git pre-push hook`：执行 `git push` 前同步已绑定 Markdown 文件。
+`Sync after save` depends on Obsidian receiving file change events. It runs for edits inside Obsidian, and for edits from another editor while Obsidian has the vault open. It does not run when Obsidian is closed.
 
-#### 生效场景
+`Git pre-push hook` depends only on `git push`. Install it from the `Git Hook` settings section. If sync fails, the current `git push` is blocked.
 
-`保存后同步` 依赖 Obsidian 捕获文件变更事件，适用于以下场景：
+---
 
-- 在 Obsidian 中直接编辑并保存：可以自动同步。
-- 用其他编辑器修改文件，但 Obsidian 同时保持运行并监听该 vault：可以自动同步。
-- 用其他编辑器修改文件，且 Obsidian 未运行或未打开该 vault：不会触发自动同步。
+## Settings
 
-`Git pre-push hook` 只依赖 Git 推送命令，不依赖 Obsidian 或其他编辑器是否运行。适合把同步作为提交发布流程的一部分，确保执行
-`git push` 前先同步已绑定文档。
+- `Default target`: Wiki URL, wiki node token, folder token, or blank for the personal library.
+- `Title source`: use the first Markdown heading or the file name.
+- `Write binding to frontmatter`: also store the remote URL in note frontmatter. The plugin-data binding remains either way.
+- `Sync strategy`: automatic by default. Small changes use incremental sync. Large, complex, or unsafe changes fall back to a full overwrite.
+- `Sync state cache`: how many document states are kept for precise sync.
 
-使用 Git hook 时，在设置页 `Git Hook` 区域点击 `安装 hook`。如果同步失败，本次 `git push` 会被阻断。
+## Incremental sync and remote history
 
-## 设置
+The plugin splits Markdown into top-level blocks and records their Feishu/Lark block ids. Later syncs update changed blocks, such as replacing, inserting, or deleting a paragraph, without rewriting the whole document. Feishu/Lark can keep the corresponding history. The remote document is rewritten when you choose overwrite, or when the automatic strategy decides the change is too large or too complex for an incremental update.
 
-- `默认上传位置`：Wiki URL、Wiki 节点 token、文件夹 token；留空则上传到个人文档库。
-- `标题来源`：使用第一个 Markdown 标题，或使用文件名。
-- `写入 frontmatter 绑定信息`：发布后额外把飞书文档 URL 写入笔记 frontmatter；关闭后，绑定仍保存在插件数据中。
-- `同步策略`：默认自动策略；小改动增量同步，改动较大、结构复杂或无法安全增量时自动全量覆盖。
-- `同步状态缓存`：控制安全增量同步状态最多保留多少篇文档。
+![Remote history](./docs/images/lark-history.png)
 
-## 增量同步与飞书历史记录
+Publication bindings and pending attempts are stored in `.obsidian/plugins/feishu-docs-publisher/data.json`. They are independent of sync-state cache trimming.
 
-插件会把 Markdown 拆成顶层内容块，并记录这些块与飞书 / Lark 文档 block id 的映射。后续同步时，优先只对发生变化的块执行增量更新，例如替换某个段落、插入新增段落或删除过期段落。
-
-这种按块同步不会清空并重写整篇文档，因此飞书 / Lark 侧能继续保留对应的操作历史、最近更新记录和协作上下文。只有在选择 `全量覆盖`，或自动策略判断本次改动较大、结构复杂、无法安全增量时，才会降级为重写远端文档。
-
-![飞书历史记录保留效果](./docs/images/lark-history.png)
-
-发布绑定和待确认记录保存在 `.obsidian/plugins/feishu-lark-cli-sync/data.json`，不会随同步状态缓存裁剪而丢失。
-
-安全增量同步状态保存在：
+Precise sync state is stored at:
 
 ```text
-.obsidian/plugins/feishu-lark-cli-sync/lark-sync-state.json
+.obsidian/plugins/feishu-docs-publisher/lark-sync-state.json
 ```
 
-## 说明
+## Notes
 
-- 插件通过本机 `lark-cli` 调用飞书 / Lark，不保存 App Secret、access token 或 OAuth 配置。
-- 自动同步只处理已绑定文档，不会自动发布未绑定笔记。
-- 如果飞书 / Lark 上有人工修改，请先合并回本地 Markdown；本插件以本地内容为准。
+- Auto sync only handles already bound notes and does not publish unbound files.
+- If a remote document was edited manually, merge those edits back into the local Markdown file first. Local Markdown is the source of truth.
 
-## 开发
+## Development
 
 ```bash
 npm install
-npm run build
 npm test
+npm run build
 ```
 
-修改源码后，需要重新执行 `npm run build` 生成 `main.js` 和 `lark-sync-core.mjs`。
+`npm test` typechecks and runs the test suite. `npm run build` writes `main.js`, which is gitignored. `npm run check` runs tests and the production build.
 
-本地安装到指定 vault：
+Pushing a tag that exactly matches `manifest.json` and `package.json` `version` (for example `0.2.0`, with no `v` prefix) runs `.github/workflows/release.yml`. That workflow verifies the tag, runs `npm ci` and `npm run check`, attests `main.js`, `manifest.json`, and `styles.css`, and opens a draft GitHub release containing those files.
 
-```bash
-./install.sh "/path/to/your/vault"
-```
+`npm version` updates `manifest.json` and adds the new version to `versions.json` through `scripts/version-bump.mjs`.
 
-## 许可
+## License
 
-MIT License
+MIT License. Copyright (c) 2026 huan.wang and Copyright (c) 2026 totok22. See `LICENSE`.

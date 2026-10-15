@@ -1712,7 +1712,7 @@ export function formatSyncFailureMessage(input: FormatSyncFailureInput): string 
 
 function formatEnglishSyncFailure(input: FormatSyncFailureInput, reason: string, detail: string): string {
 	if (input.mode === "pre-push") {
-		return `[Feishu Lark CLI Sync] pre-push sync failed: ${input.path}\nReason: ${reason}.${detail}\nPush was blocked to avoid overwriting remote document history.`;
+		return `[Feishu Docs Publisher] pre-push sync failed: ${input.path}\nReason: ${reason}.${detail}\nPush was blocked to avoid overwriting remote document history.`;
 	}
 
 	if (input.mode === "save") {
@@ -1728,7 +1728,7 @@ function formatEnglishSyncFailure(input: FormatSyncFailureInput, reason: string,
 
 function formatChineseSyncFailure(input: FormatSyncFailureInput, reason: string, detail: string): string {
 	if (input.mode === "pre-push") {
-		return `[Feishu Lark CLI Sync] pre-push 同步失败：${input.path}\n原因：${reason}。${detail}\n已阻止 git push，以避免覆盖飞书文档修改历史。`;
+		return `[Feishu Docs Publisher] pre-push 同步失败：${input.path}\n原因：${reason}。${detail}\n已阻止 git push，以避免覆盖飞书文档修改历史。`;
 	}
 
 	if (input.mode === "save") {

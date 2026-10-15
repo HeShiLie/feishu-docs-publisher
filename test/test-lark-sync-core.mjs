@@ -2290,7 +2290,7 @@ assert.equal(
 		path: "docs/a.md",
 		reason: "remote-revision-changed"
 	}),
-	"[Feishu Lark CLI Sync] pre-push 同步失败：docs/a.md\n原因：远端文档版本已变化，已停止安全增量同步。\n已阻止 git push，以避免覆盖飞书文档修改历史。"
+	"[Feishu Docs Publisher] pre-push 同步失败：docs/a.md\n原因：远端文档版本已变化，已停止安全增量同步。\n已阻止 git push，以避免覆盖飞书文档修改历史。"
 );
 
 assert.equal(
@@ -2300,7 +2300,7 @@ assert.equal(
 		path: "docs/a.md",
 		reason: "remote-revision-changed"
 	}),
-	"[Feishu Lark CLI Sync] pre-push sync failed: docs/a.md\nReason: remote document revision changed; precise sync aborted.\nPush was blocked to avoid overwriting remote document history."
+	"[Feishu Docs Publisher] pre-push sync failed: docs/a.md\nReason: remote document revision changed; precise sync aborted.\nPush was blocked to avoid overwriting remote document history."
 );
 
 assert.equal(
@@ -2311,7 +2311,7 @@ assert.equal(
 		reason: "lark-cli-failed",
 		detail: "network timeout"
 	}),
-	"[Feishu Lark CLI Sync] pre-push 同步失败：docs/a.md\n原因：lark-cli 执行失败。\nnetwork timeout\n已阻止 git push，以避免覆盖飞书文档修改历史。"
+	"[Feishu Docs Publisher] pre-push 同步失败：docs/a.md\n原因：lark-cli 执行失败。\nnetwork timeout\n已阻止 git push，以避免覆盖飞书文档修改历史。"
 );
 
 assert.equal(
@@ -2333,7 +2333,7 @@ assert.equal(
 		reason: "diff-too-complex",
 		detail: "安全增量同步仍在接入中"
 	}),
-	"[Feishu Lark CLI Sync] pre-push 同步失败：docs/a.md\n原因：本次变更过于复杂，无法安全增量同步。\n安全增量同步仍在接入中\n已阻止 git push，以避免覆盖飞书文档修改历史。"
+	"[Feishu Docs Publisher] pre-push 同步失败：docs/a.md\n原因：本次变更过于复杂，无法安全增量同步。\n安全增量同步仍在接入中\n已阻止 git push，以避免覆盖飞书文档修改历史。"
 );
 
 console.log("lark sync core tests passed");
