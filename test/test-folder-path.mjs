@@ -10,7 +10,11 @@ await esbuild.build({
 	target: "node20"
 });
 
-const { getRemoteParentPath, getSelectedFolderName } = await import("./.tmp-folder-path-test.mjs");
+const { clearDisconnectedFolderPaths, getRemoteParentPath, getSelectedFolderName } = await import("./.tmp-folder-path-test.mjs");
+
+const disconnectedFolders = { Root: true, "Root/Child": true, Other: true, Ignored: false };
+assert.equal(clearDisconnectedFolderPaths(disconnectedFolders, "Root/Child/Deep"), true);
+assert.deepEqual(disconnectedFolders, { Other: true, Ignored: false });
 
 assert.equal(getSelectedFolderName("功能需求/供应业务/2026/ITC-78270"), "ITC-78270");
 assert.equal(getSelectedFolderName("功能需求/供应业务/2026/ITC-78270/design"), "design");

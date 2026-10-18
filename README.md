@@ -10,8 +10,8 @@ Use it when Obsidian is the local source of truth and Feishu/Lark is where the t
 
 ## Network & Third-Party Account Disclosures
 
-- **Third-Party Account**: Sync requires a Feishu or Lark account signed in through the local [`lark-cli`](https://github.com/larksuite/cli) (`lark-cli auth login`). This plugin does not ask for an app secret.
-- **Network Access**: Publish, sync, overwrite, link lookup, and `lark-cli` version checks run the local `lark-cli`. That program sends HTTPS requests to the official Feishu/Lark Open APIs (`open.feishu.cn` for Feishu accounts, `open.larksuite.com` for Lark accounts). Requests run when you sync or publish, and also from save-triggered sync and the Git `pre-push` hook when those modes are enabled. There is no separate telemetry channel.
+- **Third-Party Account**: Sync requires a Feishu or Lark account. Sign-in, sign-out, and reauthorization are available in the plugin's **CLI & authorization** settings. The plugin calls the local [`lark-cli`](https://github.com/larksuite/cli) and does not collect app secrets.
+- **Network Access**: Installing or upgrading `lark-cli` runs the local npm client against the npm Registry, and the `@larksuite/cli` installer downloads the matching official program. Publish, sync, overwrite, link lookup, and version checks run `lark-cli`, which sends HTTPS requests to the official Feishu/Lark Open APIs (`open.feishu.cn` for Feishu accounts, `open.larksuite.com` for Lark accounts). Requests run when you sync or publish, and also from save-triggered sync and the Git `pre-push` hook when those modes are enabled. There is no separate telemetry channel.
 - **Credential Storage**: Login credentials stay in the local `lark-cli` auth store. This plugin does not write app secrets or access tokens into notes, `data.json`, or logs. Document URLs and bindings are stored in plugin data, and optionally in note frontmatter when that setting is enabled.
 
 ---
@@ -75,28 +75,34 @@ npm run build
 
 The install script copies the built plugin into `.obsidian/plugins/feishu-docs-publisher/`. If that vault already has a hook installed by this plugin, the script refreshes the hook helper scripts. Restart Obsidian and enable **Feishu Docs Publisher**.
 
+After enabling it, use **First-time setup** below to install, configure, and sign in to `lark-cli` from plugin settings. You do not need terminal commands for dependency installation.
+
 The GitHub repository and the vault plugin folder are both `feishu-docs-publisher`.
 
 ---
 
-## Prerequisites
+## First-time setup
 
-Install and log in to `lark-cli` first:
+You do not need to open a terminal for first-time setup. Open **Feishu Docs Publisher → CLI & authorization** in Obsidian settings and follow the status shown there:
 
-```bash
-npm install -g @larksuite/cli
-lark-cli version
-lark-cli auth login
-lark-cli auth status
-```
+1. If npm is missing, click **Download Node.js**, complete the Node.js installation, and return to settings to click **Check again**.
+2. Click **Install lark-cli**. When a later release is available, the same position offers an upgrade.
+3. On first use, when no CLI app is configured, choose Feishu or Lark under **CLI app configuration** and click **Create app**. Complete the official setup flow in your browser.
+4. Click **Sign in / reauthorize** and approve the requested permissions in your browser. The current user appears after success. To switch accounts, sign out and authorize again.
 
-Use `lark-cli >= 1.0.53`. Older versions may create documents titled `Untitled` or fail during sync. Upgrade with:
+The plugin requires `lark-cli > 1.0.53`. Older versions may create documents titled `Untitled` or fail during sync; settings show an upgrade action when this applies.
 
-```bash
-npm install -g @larksuite/cli@latest
-```
+If auto-detection cannot find the executable, set its absolute path under **lark-cli path**. Settings also show the npm and CLI versions, the latest available version, and login status.
 
-If Obsidian cannot find `lark-cli`, set its absolute path in plugin settings (`which lark-cli`).
+### Network proxy
+
+The **Network proxy** setting has three choices:
+
+- **Use system environment (recommended)**: inherit `HTTPS_PROXY`, `HTTP_PROXY`, or `ALL_PROXY`.
+- **Use a custom HTTP proxy**: enter a host and port, such as `127.0.0.1` and `7890`.
+- **Do not use a proxy**: make CLI and npm child processes ignore proxy environment variables.
+
+Proxy settings affect only `lark-cli`, npm, and Git `pre-push` sync processes started by this plugin. They do not change the operating system or global `lark-cli` configuration. The plugin does not store proxy usernames or passwords in plugin data.
 
 ---
 
@@ -210,6 +216,8 @@ Auto sync only handles already bound documents. Publish once with `Lark: Sync to
 
 ## Settings
 
+- `CLI & authorization`: install or upgrade `lark-cli`, create a CLI app, sign in or reauthorize, sign out, and view version status.
+- `Network proxy`: use the system proxy, a custom HTTP host and port, or no proxy.
 - `Default target`: Wiki URL, wiki node token, folder token, or blank for the personal library.
 - `Title source`: use the first Markdown heading or the file name.
 - `Write binding to frontmatter`: also store the remote URL in note frontmatter. The plugin-data binding remains either way.

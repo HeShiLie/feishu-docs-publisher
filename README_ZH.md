@@ -10,8 +10,8 @@
 
 ## 网络与第三方账号披露
 
-- **第三方账号**：同步需要飞书或 Lark 账号，并通过本机 [`lark-cli`](https://github.com/larksuite/cli) 登录（`lark-cli auth login`）。本插件不收集应用密钥。
-- **网络访问**：发布、同步、覆盖、查找链接以及 `lark-cli` 版本检查都会调用本机 `lark-cli`。该程序向飞书 / Lark 官方 Open API 发送 HTTPS 请求（飞书账号使用 `open.feishu.cn`，Lark 账号使用 `open.larksuite.com`）。手动同步或发布时会发起请求；开启「保存后同步」或 Git `pre-push` hook 后，这些操作也会发起请求。插件没有单独的统计上报通道。
+- **第三方账号**：同步需要飞书或 Lark 账号。登录、退出和重新授权都可以在插件设置的「CLI 与授权」中完成；插件只调用本机 [`lark-cli`](https://github.com/larksuite/cli)，不收集应用密钥。
+- **网络访问**：安装或升级 `lark-cli` 时，插件会调用本机 npm 访问 npm Registry，并由 `@larksuite/cli` 的安装脚本下载对应平台的官方程序。发布、同步、覆盖、查找链接和版本检查会调用 `lark-cli`，向飞书 / Lark 官方 Open API 发送 HTTPS 请求（飞书账号使用 `open.feishu.cn`，Lark 账号使用 `open.larksuite.com`）。手动同步或发布时会发起请求；开启「保存后同步」或 Git `pre-push` hook 后，这些操作也会发起请求。插件没有单独的统计上报通道。
 - **凭据存储**：登录凭据保存在本机 `lark-cli` 的认证存储中。本插件不会把应用密钥或 access token 写入笔记、`data.json` 或日志。文档 URL 和绑定保存在插件数据中；开启对应设置时，也会写入笔记 frontmatter。
 
 ---
@@ -75,28 +75,34 @@ npm run build
 
 安装脚本会把构建结果复制到 `.obsidian/plugins/feishu-docs-publisher/`。如果该库已经安装过本插件的 hook，脚本会刷新 hook 辅助脚本。重启 Obsidian 后启用 **Feishu Docs Publisher**。
 
+启用后按下一节的「首次使用」在插件设置中安装、配置并登录 `lark-cli`，不需要在终端执行依赖安装命令。
+
 GitHub 仓库名和库内插件目录都是 `feishu-docs-publisher`。
 
 ---
 
-## 使用前准备
+## 首次使用
 
-先安装并登录 `lark-cli`：
+首次使用时不需要打开终端。打开 Obsidian 设置中的 **Feishu Docs Publisher → CLI 与授权**，按页面状态操作：
 
-```bash
-npm install -g @larksuite/cli
-lark-cli version
-lark-cli auth login
-lark-cli auth status
-```
+1. 如果未找到 npm，点击「下载 Node.js」，完成 Node.js 安装后回到设置页点击「重新检测」。
+2. 点击「安装 lark-cli」。以后有更新时，同一位置会显示版本并可升级。
+3. 首次使用且未配置 CLI 应用时，在「CLI 应用配置」选择飞书或 Lark，点击「创建应用」，在浏览器完成官方创建流程。
+4. 点击「登录 / 重新授权」，在浏览器确认所需权限。成功后会显示当前登录用户；需要切换账号时，先「退出登录」再重新授权。
 
-请使用 `lark-cli >= 1.0.53`。旧版本可能导致新建文档标题为 `Untitled`，或在同步时报错。版本过低时请升级：
+插件要求 `lark-cli > 1.0.53`。版本过低可能导致新建文档标题为 `Untitled`，或在同步时报错；设置页会直接提示并允许升级。
 
-```bash
-npm install -g @larksuite/cli@latest
-```
+如果自动探测不到可执行文件，可在「lark-cli 路径」中填写绝对路径。设置页还会显示 npm 与 CLI 的版本、最新版本和登录状态。
 
-如果 Obsidian 找不到 `lark-cli`，在插件设置的 `lark-cli 路径` 中填写绝对路径（`which lark-cli`）。
+### 网络代理
+
+设置中的「网络代理」有三档：
+
+- **继承系统环境变量（推荐）**：沿用当前环境的 `HTTPS_PROXY`、`HTTP_PROXY` 或 `ALL_PROXY`。
+- **使用自定义 HTTP 代理**：填写主机和端口，例如 `127.0.0.1` 和 `7890`。
+- **不使用代理**：插件启动的 CLI 和 npm 子进程会忽略代理环境变量。
+
+代理设置只作用于本插件启动的 `lark-cli`、npm 以及 Git `pre-push` hook 中的同步进程，不修改操作系统或 `lark-cli` 的全局配置。插件不会把代理用户名或密码写入插件数据。
 
 ---
 
@@ -210,6 +216,8 @@ Git hook 也会复用 PDF 绑定，并按库路径或相对笔记的路径改写
 
 ## 设置
 
+- `CLI 与授权`：安装或升级 `lark-cli`、创建 CLI 应用、登录/重新授权、退出登录和查看版本状态。
+- `网络代理`：选择系统代理、自定义 HTTP 主机与端口，或关闭代理。
 - `默认上传位置`：Wiki URL、Wiki 节点 token、文件夹 token；留空则上传到个人文档库。
 - `标题来源`：使用第一个 Markdown 标题，或使用文件名。
 - `写入 frontmatter 绑定信息`：额外把远端 URL 写入笔记 frontmatter。插件数据中的绑定始终保留。

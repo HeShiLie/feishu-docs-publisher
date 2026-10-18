@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import esbuild from "esbuild";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 await esbuild.build({
 	bundle: true,
@@ -864,6 +867,19 @@ pdfOnlyPlugin.syncPdfFileUnlocked = async () => {pdfOnlyUploaded=true;};
 await pdfOnlyPlugin.publishFolderInternal("Root");
 assert.equal(pdfOnlyUploaded,true,"PDF-only folders must create hierarchy and upload");
 
+const reconnectedFolderPlugin = createPublishingPlugin();
+reconnectedFolderPlugin.settings.disconnectedFolders = { Root: true, Other: true };
+const childNote = { ...fakeNote, path: "Root/Child/Note.md" };
+reconnectedFolderPlugin.app.vault.getMarkdownFiles = () => [childNote];
+reconnectedFolderPlugin.app.vault.getFiles = () => [childNote];
+reconnectedFolderPlugin.withDeferredLarkSyncStateSave = async (callback) => callback();
+reconnectedFolderPlugin.readNoteForLark = async () => { throw new Error("reconnected folder reached note read"); };
+await assert.rejects(reconnectedFolderPlugin.publishFolderInternal("Root/Child"), /reconnected folder reached note read/);
+assert.equal(reconnectedFolderPlugin.settings.disconnectedFolders.Root, undefined,
+	"an ancestor disconnect marker must not hide a newly bound child folder");
+assert.equal(reconnectedFolderPlugin.settings.disconnectedFolders.Other, true,
+	"unrelated disconnect markers must stay");
+
 const pdfReferencePlugin = createPublishingPlugin();
 const pdfCite = '<cite type="doc" doc-id="pdf-file" file-type="file"></cite>';
 pdfReferencePlugin.settings.pdfBindings["Root/Scan.pdf"] = { status: "published", fileToken: "pdf-file" };
@@ -891,6 +907,36 @@ assert.equal(pdfReferencePlugin.rewritePublishedPdfReferences(fakeNote, pdfSourc
 delete pdfReferencePlugin.settings.disconnectedFolders.Root;
 pdfReferencePlugin.app.metadataCache.getFirstLinkpathDest = () => ({ path: "Unpublished/Scan.pdf" });
 assert.equal(pdfReferencePlugin.rewritePublishedPdfReferences(fakeNote, "[[Scan.pdf]]"), "[[Scan.pdf]]");
+
+const deletedPdfRoot = await mkdtemp(join(tmpdir(), "lark-deleted-pdf-test-"));
+try {
+	await writeFile(join(deletedPdfRoot, "Doc.pdf"), "%PDF-1.4\n% test\n");
+	const deletedPdfPlugin = createPublishingPlugin();
+	deletedPdfPlugin.getVaultRoot = () => deletedPdfRoot;
+	deletedPdfPlugin.resolveExclusiveRemoteBinding = async () => {};
+	const deletedPdfParent = { kind: "drive", token: "target-folder" };
+	deletedPdfPlugin.settings.pdfBindings["Doc.pdf"] = {
+		version: 1, key: "stale-key", scope: "user", vaultPath: "Doc.pdf",
+		parent: { ...deletedPdfParent }, fileName: "Doc.pdf",
+		contentHash: "0".repeat(64), size: 5, status: "published",
+		fileToken: "deleted-file", url: "https://example.feishu.cn/file/deleted-file",
+		updatedAt: new Date().toISOString()
+	};
+	deletedPdfPlugin.listRemoteDocuments = async () => [];
+	let reuploaded = 0;
+	deletedPdfPlugin.runLarkCli = async (args) => {
+		if (args[1] === "+upload") {
+			reuploaded++;
+			return { ok: true, data: { file_token: "reuploaded-file", url: "https://example.feishu.cn/file/reuploaded-file" } };
+		}
+		throw new Error("Unexpected CLI command: " + args.join(" "));
+	};
+	await deletedPdfPlugin.syncPdfFileUnlocked(fakePdf, deletedPdfParent);
+	assert.equal(reuploaded, 1, "a deleted remote PDF must be uploaded again");
+	assert.equal(deletedPdfPlugin.settings.pdfBindings["Doc.pdf"].fileToken, "reuploaded-file");
+} finally {
+	await rm(deletedPdfRoot, { recursive: true, force: true });
+}
 
 const pdfFolderPlugin = createPublishingPlugin();
 pdfFolderPlugin.app.vault.getMarkdownFiles = () => [folderNote];
@@ -1240,5 +1286,73 @@ sharedPdf.settings.pdfBindings = { "One.pdf": { fileToken: "same-pdf" }, "Two.pd
 sharedPdf.runLarkCli = async () => assert.fail("Shared PDFs must not be uploaded");
 await assert.rejects(sharedPdf.syncPdfFileUnlocked({ path: "One.pdf" }), /Two.pdf/);
 assert.equal(sharedPdf.t("menuOverwriteSyncToLark"), "Lark: 覆盖同步到飞书");
+
+const cliStatusPlugin = createPlugin();
+cliStatusPlugin.probeLarkCliVersion = async () => ({ installed: true, version: "1.0.54", error: "" });
+cliStatusPlugin.getNpmToolStatus = async () => ({ available: true, version: "10.9.0", path: "/opt/homebrew/bin/npm", error: "" });
+cliStatusPlugin.getLatestLarkCliVersion = async () => ({ version: "1.0.98", error: "" });
+cliStatusPlugin.runLarkCliCapture = async (args) => {
+	if (args[0] === "auth" && args[1] === "list") {
+		return { ok: true, stdout: JSON.stringify([{ userName: "Alex", userOpenId: "ou_1", tokenStatus: "valid" }]), stderr: "", error: "", launchError: false };
+	}
+	if (args[0] === "auth" && args[1] === "status") {
+		return { ok: true, stdout: JSON.stringify({ appId: "cli_1", brand: "feishu", identity: "user", identities: { user: {
+			available: true, userName: "Alex", tokenStatus: "valid"
+		} } }), stderr: "", error: "", launchError: false };
+	}
+	assert.fail(`Unexpected management command: ${args.join(" ")}`);
+};
+const cliStatus = await cliStatusPlugin.getLarkCliManagementStatus();
+assert.equal(cliStatus.installed, true);
+assert.equal(cliStatus.supported, true);
+assert.equal(cliStatus.updateAvailable, true);
+assert.equal(cliStatus.auth.configured, true);
+assert.equal(cliStatus.authStatus.userName, "Alex");
+
+const unconfiguredCliPlugin = createPlugin();
+unconfiguredCliPlugin.probeLarkCliVersion = async () => ({ installed: true, version: "1.0.98", error: "" });
+unconfiguredCliPlugin.getNpmToolStatus = async () => ({ available: true, version: "10.9.0", path: "npm", error: "" });
+unconfiguredCliPlugin.getLatestLarkCliVersion = async () => ({ version: "1.0.98", error: "" });
+unconfiguredCliPlugin.runLarkCliCapture = async (args) => args[1] === "list"
+	? { ok: true, stdout: '{"ok":true,"users":[],"reason":"not_configured"}', stderr: "", error: "", launchError: false }
+	: { ok: false, stdout: "", stderr: "not configured", error: "not configured", launchError: false };
+const unconfiguredStatus = await unconfiguredCliPlugin.getLarkCliManagementStatus();
+assert.equal(unconfiguredStatus.auth.configured, false);
+assert.equal(unconfiguredStatus.authError, "", "a deliberate not-configured result is not a status-check failure");
+
+const loginPlugin = createPlugin();
+let loginPollStarted = false;
+let openedLoginUrl = "";
+loginPlugin.runLarkCliCapture = async (args) => {
+	assert.deepEqual(args.slice(0, 3), ["auth", "login", "--recommend"]);
+	assert.ok(args.includes("--no-wait"));
+	return { ok: true, stdout: JSON.stringify({
+		verification_url: "https://open.feishu.cn/page/cli?user_code=ABCD",
+		device_code: "device-code",
+		expires_in: 600
+	}), stderr: "", error: "", launchError: false };
+};
+loginPlugin.openAuthorizationUrl = (url) => { openedLoginUrl = url; };
+loginPlugin.startLarkCliLoginPolling = () => { loginPollStarted = true; };
+const pendingLogin = await loginPlugin.startLarkCliLogin();
+assert.equal(pendingLogin.kind, "login");
+assert.equal(pendingLogin.deviceCode, "device-code");
+assert.equal(openedLoginUrl, "https://open.feishu.cn/page/cli?user_code=ABCD");
+assert.equal(loginPollStarted, true);
+assert.equal(loginPlugin.getPendingLarkCliAuthorization().kind, "login");
+loginPlugin.cancelLarkCliAuthorization();
+assert.equal(loginPlugin.getPendingLarkCliAuthorization(), null);
+
+const upgradePlugin = createPlugin();
+const upgradeCommands = [];
+upgradePlugin.getNpmToolStatus = async () => ({ available: true, version: "10.9.0", path: "npm", error: "" });
+upgradePlugin.probeLarkCliVersion = async () => ({ installed: false, version: "", error: "missing" });
+upgradePlugin.runNpmCapture = async (args) => {
+	upgradeCommands.push(args);
+	return { ok: true, stdout: "added 1 package", stderr: "", error: "", launchError: false };
+};
+upgradePlugin.getLarkCliManagementStatus = async () => ({ ...cliStatus, installed: true, version: "1.0.98", updateAvailable: false });
+await upgradePlugin.installOrUpgradeLarkCli();
+assert.deepEqual(upgradeCommands, [["install", "-g", "@larksuite/cli@latest", "--no-audit", "--no-fund"]]);
 
 console.log("main plugin tests passed");

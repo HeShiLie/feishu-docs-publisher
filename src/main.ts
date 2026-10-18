@@ -1,5 +1,5 @@
-import { addIcon, FileSystemAdapter, Menu, Notice, Plugin, PluginSettingTab, Setting, TFile, TFolder } from "obsidian";
-import { execFile } from "child_process";
+import { addIcon, ButtonComponent, FileSystemAdapter, Menu, Notice, Plugin, PluginSettingTab, Setting, TFile, TFolder } from "obsidian";
+import { ChildProcess, execFile, spawn } from "child_process";
 import { constants } from "fs";
 import { access, chmod, copyFile, mkdir, readFile, rename, stat } from "fs/promises";
 import { mkdtemp, rm, writeFile } from "fs/promises";
@@ -8,6 +8,7 @@ import { homedir, tmpdir } from "os";
 import process from "process";
 import { promisify } from "util";
 import {
+	clearDisconnectedFolderPaths,
 	getRemoteParentPath as getSelectedRemoteParentPath,
 	getSelectedFolderName as getSelectedRemoteRootName
 } from "./folder-path";
@@ -64,12 +65,40 @@ import {
 	formatMissingLarkCli,
 	formatUnsupportedLarkCliVersion,
 	isSupportedLarkCliVersion,
+	MIN_EXCLUSIVE_LARK_CLI_VERSION,
 	parseLarkCliVersion,
 	resolveLarkCliInvocation,
 	resolveLarkCliPathFromSetting,
 	uniquePathEntries,
 	withDocsApiVersion
 } from "./lark-cli-command";
+import {
+	applyProxyEnvironment,
+	buildProxyUrl,
+	DEFAULT_PROXY_HOST,
+	DEFAULT_PROXY_PORT,
+	detectProxyEnvironment,
+	extractLarkCliVerificationUrl,
+	isLarkCliVersionNewer,
+	LarkCliAuthList,
+	LarkCliAuthStatus,
+	LarkCliBrand,
+	LarkCliDeviceAuthorization,
+	LARK_CLI_NPM_PACKAGE,
+	LarkCliProxyMode,
+	LarkCliUpdateCheck,
+	NODE_DOWNLOAD_URL,
+	normalizeLarkCliBrand,
+	normalizeProxyHost,
+	normalizeProxyMode,
+	normalizeProxyPort,
+	parseLarkCliAuthList,
+	parseLarkCliAuthStatus,
+	parseLarkCliDeviceAuthorization,
+	parseLarkCliError,
+	parseLarkCliUpdateCheck,
+	parseNpmVersionOutput
+} from "./lark-cli-management";
 import {
 	EMBEDDED_LARK_CLI_COMMAND_SCRIPT,
 	EMBEDDED_PRE_PUSH_CORE_SCRIPT,
@@ -115,7 +144,11 @@ const DEFAULT_SETTINGS: LarkCliSyncSettings = {
 	autoSyncMode: "save",
 	autoSyncDelaySeconds: 15,
 	syncStrategy: "auto",
-	stateCacheRetainLimit: 100
+	stateCacheRetainLimit: 100,
+	proxyMode: "system",
+	proxyHost: DEFAULT_PROXY_HOST,
+	proxyPort: DEFAULT_PROXY_PORT,
+	larkCliBrand: "feishu"
 };
 
 const FRONTMATTER_REMOTE_ROOT_KEY = "remoteRoot";
@@ -152,6 +185,10 @@ const LARK_CLI_MAX_CONCURRENT_REQUESTS = 3;
 const LARK_CLI_REQUEST_INTERVAL_MS = 350;
 const LARK_CLI_RATE_LIMIT_RETRY_DELAYS_MS = [3000, 6000, 12000];
 const LARK_CLI_VERSION_ARGS = [["-version"], ["-v"]];
+const LARK_CLI_STATUS_TIMEOUT_MS = 20_000;
+const LARK_CLI_INSTALL_TIMEOUT_MS = 10 * 60_000;
+const LARK_CLI_LOGIN_TIMEOUT_MS = 12 * 60_000;
+const LARK_CLI_CONFIGURATION_TIMEOUT_MS = 12 * 60_000;
 const FALLBACK_LOGIN_SHELLS = ["/bin/zsh", "/bin/bash", "/bin/sh"];
 const STAGED_PUBLISH_THRESHOLD_BYTES = 100 * 1024;
 const STAGED_PUBLISH_THRESHOLD_UNITS = 400;
@@ -163,6 +200,7 @@ type Language = "zh-CN" | "en";
 type AutoSyncMode = "manual" | "save" | "pre-push";
 type PrePushHookStatus = "installed" | "not-installed" | "not-git-repository" | "unavailable" | "unknown";
 type RemoteParentKind = "wiki" | "drive" | "my_library" | "unknown";
+type LarkCliAuthorizationKind = "login" | "app-configuration";
 
 interface LarkCliSyncSettings {
 	language: Language;
@@ -184,11 +222,54 @@ interface LarkCliSyncSettings {
 	autoSyncDelaySeconds: number;
 	syncStrategy: SyncStrategy;
 	stateCacheRetainLimit: number;
+	proxyMode: LarkCliProxyMode;
+	proxyHost: string;
+	proxyPort: number;
+	larkCliBrand: LarkCliBrand;
 }
 
 interface LarkCliVersionCheck {
 	executable: string;
 	version: string;
+}
+
+interface LarkCliToolStatus {
+	available: boolean;
+	version: string;
+	path: string;
+	error: string;
+}
+
+interface LarkCliManagementStatus {
+	installed: boolean;
+	version: string;
+	versionError: string;
+	supported: boolean;
+	npm: LarkCliToolStatus;
+	latestVersion: string;
+	updateAvailable: boolean;
+	updateError: string;
+	auth: LarkCliAuthList;
+	authStatus: LarkCliAuthStatus | null;
+	authError: string;
+}
+
+interface RawCommandCapture {
+	stdout: string;
+	stderr: string;
+}
+
+interface RawCommandResult extends RawCommandCapture {
+	ok: boolean;
+	error: string;
+	launchError: boolean;
+}
+
+interface PendingLarkCliAuthorization {
+	kind: LarkCliAuthorizationKind;
+	verificationUrl: string;
+	startedAt: string;
+	deviceCode?: string;
 }
 
 interface BoundLarkDocument {
@@ -416,6 +497,8 @@ const MESSAGES = {
 		errorInvalidDefaultTarget: "默认上传位置无效或当前飞书账号无权访问。\n请检查插件设置中的“默认上传位置”：{target}\n底层原因：{detail}",
 		settingsTitle: "Feishu Docs Publisher",
 		settingsSectionGeneral: "常规",
+		settingsSectionCli: "CLI 与授权",
+		settingsSectionNetwork: "网络代理",
 		settingsSectionContent: "内容",
 		settingsSectionSync: "同步",
 		settingsSectionGitHook: "Git Hook",
@@ -424,7 +507,74 @@ const MESSAGES = {
 		languageChinese: "中文",
 		languageEnglish: "English",
 		settingLarkCliPathName: "lark-cli 路径",
-		settingLarkCliPathDesc: "保持默认值时会自动探测；手动配置请填写官方安装目录、npm 生成的 lark-cli.cmd 绝对路径或原生 lark-cli.exe。",
+		settingLarkCliPathDesc: "通常保持默认值即可；自动探测失败时，填写 lark-cli 可执行文件、npm 生成的 lark-cli.cmd 或原生 lark-cli.exe 的绝对路径。",
+		settingLarkCliStatusName: "lark-cli 状态",
+		settingLarkCliStatusDesc: "安装和升级由插件调用 npm 完成，不需要手动打开终端。",
+		cliStatusChecking: "正在检测 lark-cli...",
+		cliStatusMissing: "未安装。可以通过右侧按钮安装，或先安装 Node.js。",
+		cliStatusNpmMissing: "未找到 npm；请先安装 Node.js 和 npm。",
+		cliStatusNpmReady: "npm {version} 已就绪。",
+		cliStatusInstalled: "已安装 {version}。",
+		cliStatusUnsupported: "版本 {version} 低于最低要求 {minimum}，请升级。",
+		cliStatusVersionUnknown: "已找到 lark-cli，但无法读取版本。",
+		cliStatusUpToDate: "已是最新版本。",
+		cliStatusUpdateAvailable: "最新版本为 {version}。",
+		cliStatusUpdateUnknown: "暂时无法检查最新版本。",
+		installCliButton: "安装 lark-cli",
+		upgradeCliButton: "升级 lark-cli",
+		upgradeCliVersionButton: "升级到 {version}",
+		reinstallCliButton: "重新安装 lark-cli",
+		installNodeButton: "下载 Node.js",
+		recheckCliButton: "重新检测",
+		installingCli: "正在安装...",
+		upgradingCli: "正在升级...",
+		noticeCliInstalled: "lark-cli 已安装：{version}",
+		noticeCliUpgraded: "lark-cli 已更新：{version}",
+		noticeCliInstallFailed: "lark-cli 安装或升级失败：{message}",
+		errorCliInstallRequiresNode: "安装 lark-cli 需要 Node.js 与 npm。请先安装 Node.js，然后回到设置页重新检测。",
+		errorCliInstallNotDetected: "安装已结束，但插件仍未找到 lark-cli。请检查 npm 全局可执行目录，或在“lark-cli 路径”中填写绝对路径。",
+		errorCliUpgradeNotApplied: "安装已结束，但当前 lark-cli 版本仍不是最新版。请检查“lark-cli 路径”是否指向刚刚安装的文件。",
+		errorCliOperationPending: "已有 CLI 授权或配置操作正在进行，请等待它完成。",
+		settingLarkCliAccountName: "飞书 / Lark 账号",
+		settingLarkCliAccountDesc: "登录凭据保存在本机 lark-cli 中；插件不会保存 access token 或应用密钥。",
+		cliAccountChecking: "正在检查登录状态...",
+		cliAccountNotConfigured: "尚未配置 CLI 应用，请先在下方创建应用。",
+		cliAccountLoggedIn: "已登录：{user}（{brand}）",
+		cliAccountLoggedOut: "CLI 应用已配置，但还没有登录用户。",
+		cliAccountError: "无法读取登录状态：{message}",
+		loginCliButton: "登录 / 重新授权",
+		loginCliOpening: "正在获取授权链接...",
+		loginCliOpenButton: "打开授权页面",
+		loginCliWaitingButton: "等待授权...",
+		cancelCliOperationButton: "取消",
+		loginCliWaiting: "已获得授权链接，请在浏览器中确认。完成后状态会自动更新。",
+		logoutCliButton: "退出登录",
+		loginCliSuccess: "飞书 / Lark 登录成功。",
+		loginCliFailed: "登录失败：{message}",
+		loginCliScopeWarning: "已登录，但部分权限未授予：{message}",
+		logoutCliSuccess: "已退出飞书 / Lark 登录。",
+		logoutCliFailed: "退出登录失败：{message}",
+		cliAppSetupName: "CLI 应用配置",
+		cliAppSetupDesc: "首次使用需要通过浏览器创建并授权一个 CLI 应用。创建过程使用飞书 / Lark 官方流程，插件不会保存应用密钥。",
+		brandFeishu: "飞书",
+		brandLark: "Lark",
+		createCliAppButton: "创建应用",
+		cliAppSetupStarting: "正在创建应用...",
+		cliAppSetupWaiting: "请在浏览器完成应用创建；链接出现后也可以点击“打开授权页面”。",
+		cliAppSetupSuccess: "CLI 应用配置完成。现在可以登录飞书 / Lark 账号。",
+		cliAppSetupFailed: "CLI 应用配置失败：{message}",
+		settingProxyModeName: "网络代理",
+		settingProxyModeDesc: "只影响插件启动的 lark-cli 和 npm 进程，不修改系统代理或 lark-cli 全局配置。",
+		proxyModeSystem: "继承系统环境变量（推荐）",
+		proxyModeCustom: "使用自定义 HTTP 代理",
+		proxyModeOff: "不使用代理",
+		proxySystemDetected: "当前检测到 {key}={value}。",
+		proxySystemNotDetected: "当前没有检测到代理环境变量。",
+		proxyHostName: "代理主机",
+		proxyHostDesc: "默认 127.0.0.1，适用于 Clash、Surge 等本机代理。",
+		proxyPortName: "代理端口",
+		proxyPortDesc: "填写本机代理的 HTTP 端口，例如 7890。",
+		proxyCustomStatus: "插件启动的 CLI/npm 将使用 {url}。",
 		settingDefaultTargetName: "默认上传位置",
 		settingDefaultTargetDesc: "填写 Wiki URL、Wiki 节点 token、文件夹 token；留空则上传到个人文档库。",
 		settingTitleSourceName: "标题来源",
@@ -493,6 +643,8 @@ const MESSAGES = {
 		errorInvalidDefaultTarget: "Default upload target is invalid or inaccessible.\nCheck the Default target setting: {target}\nCause: {detail}",
 		settingsTitle: "Feishu Docs Publisher",
 		settingsSectionGeneral: "General",
+		settingsSectionCli: "CLI & authorization",
+		settingsSectionNetwork: "Network proxy",
 		settingsSectionContent: "Content",
 		settingsSectionSync: "Sync",
 		settingsSectionGitHook: "Git Hook",
@@ -501,7 +653,74 @@ const MESSAGES = {
 		languageChinese: "中文",
 		languageEnglish: "English",
 		settingLarkCliPathName: "lark-cli path",
-		settingLarkCliPathDesc: "Keep the default for auto-detection, or select the official install directory, npm-generated lark-cli.cmd absolute path, or native lark-cli.exe.",
+		settingLarkCliPathDesc: "Keep the default for auto-detection. If detection fails, enter the absolute path to lark-cli, the npm-generated lark-cli.cmd, or native lark-cli.exe.",
+		settingLarkCliStatusName: "lark-cli status",
+		settingLarkCliStatusDesc: "The plugin installs and upgrades lark-cli through npm. You do not need to open a terminal.",
+		cliStatusChecking: "Checking lark-cli...",
+		cliStatusMissing: "Not installed. Use the action in this row, or install Node.js first.",
+		cliStatusNpmMissing: "npm was not found. Install Node.js and npm first.",
+		cliStatusNpmReady: "npm {version} is ready.",
+		cliStatusInstalled: "Installed {version}.",
+		cliStatusUnsupported: "Version {version} is below the required minimum {minimum}. Upgrade it.",
+		cliStatusVersionUnknown: "lark-cli was found, but its version could not be read.",
+		cliStatusUpToDate: "You have the latest version.",
+		cliStatusUpdateAvailable: "Latest version: {version}.",
+		cliStatusUpdateUnknown: "The latest version could not be checked.",
+		installCliButton: "Install lark-cli",
+		upgradeCliButton: "Upgrade lark-cli",
+		upgradeCliVersionButton: "Upgrade to {version}",
+		reinstallCliButton: "Reinstall lark-cli",
+		installNodeButton: "Download Node.js",
+		recheckCliButton: "Check again",
+		installingCli: "Installing...",
+		upgradingCli: "Upgrading...",
+		noticeCliInstalled: "lark-cli installed: {version}",
+		noticeCliUpgraded: "lark-cli updated: {version}",
+		noticeCliInstallFailed: "lark-cli install or upgrade failed: {message}",
+		errorCliInstallRequiresNode: "Installing lark-cli requires Node.js and npm. Install Node.js, then return to settings and check again.",
+		errorCliInstallNotDetected: "Installation finished, but the plugin still cannot find lark-cli. Check the npm global executable directory, or enter its absolute path under lark-cli path.",
+		errorCliUpgradeNotApplied: "Installation finished, but the configured lark-cli is not the latest version. Check whether lark-cli path points to the file that was just installed.",
+		errorCliOperationPending: "Another CLI authorization or configuration step is already running. Wait for it to finish.",
+		settingLarkCliAccountName: "Feishu / Lark account",
+		settingLarkCliAccountDesc: "Login credentials stay in the local lark-cli store. The plugin does not save access tokens or app secrets.",
+		cliAccountChecking: "Checking login status...",
+		cliAccountNotConfigured: "No CLI app is configured. Create one below first.",
+		cliAccountLoggedIn: "Signed in as {user} ({brand}).",
+		cliAccountLoggedOut: "The CLI app is configured, but no user is signed in.",
+		cliAccountError: "Could not read login status: {message}",
+		loginCliButton: "Sign in / reauthorize",
+		loginCliOpening: "Requesting an authorization link...",
+		loginCliOpenButton: "Open authorization page",
+		loginCliWaitingButton: "Waiting for authorization...",
+		cancelCliOperationButton: "Cancel",
+		loginCliWaiting: "Authorization started. Confirm it in your browser; this status updates automatically.",
+		logoutCliButton: "Sign out",
+		loginCliSuccess: "Signed in to Feishu/Lark.",
+		loginCliFailed: "Sign-in failed: {message}",
+		loginCliScopeWarning: "Signed in, but some permissions were not granted: {message}",
+		logoutCliSuccess: "Signed out of Feishu/Lark.",
+		logoutCliFailed: "Sign-out failed: {message}",
+		cliAppSetupName: "CLI app configuration",
+		cliAppSetupDesc: "First-time setup creates and authorizes a CLI app in your browser through the official Feishu/Lark flow. The plugin does not save the app secret.",
+		brandFeishu: "Feishu",
+		brandLark: "Lark",
+		createCliAppButton: "Create app",
+		cliAppSetupStarting: "Creating the app...",
+		cliAppSetupWaiting: "Finish app creation in your browser. When a link appears, you can also use Open authorization page.",
+		cliAppSetupSuccess: "CLI app configuration completed. You can now sign in to your Feishu/Lark account.",
+		cliAppSetupFailed: "CLI app configuration failed: {message}",
+		settingProxyModeName: "Network proxy",
+		settingProxyModeDesc: "Affects only lark-cli and npm processes started by this plugin. It does not change system proxy settings or global lark-cli configuration.",
+		proxyModeSystem: "Use system environment (recommended)",
+		proxyModeCustom: "Use a custom HTTP proxy",
+		proxyModeOff: "Do not use a proxy",
+		proxySystemDetected: "Detected {key}={value}.",
+		proxySystemNotDetected: "No proxy environment variable was detected.",
+		proxyHostName: "Proxy host",
+		proxyHostDesc: "Defaults to 127.0.0.1, suitable for local proxies such as Clash or Surge.",
+		proxyPortName: "Proxy port",
+		proxyPortDesc: "Enter the local proxy's HTTP port, for example 7890.",
+		proxyCustomStatus: "CLI/npm processes started by the plugin will use {url}.",
 		settingDefaultTargetName: "Default target",
 		settingDefaultTargetDesc: "Wiki URL, wiki node token, folder token, or blank for personal library.",
 		settingTitleSourceName: "Title source",
@@ -560,6 +779,10 @@ export default class LarkCliSyncPlugin extends Plugin {
 	private checkedLarkCliVersionExecutable = "";
 	private pendingLarkCliVersionExecutable = "";
 	private pendingLarkCliVersionCheck: Promise<void> | null = null;
+	private pendingLarkCliAuthorization: PendingLarkCliAuthorization | null = null;
+	private pendingLarkCliChild: ChildProcess | null = null;
+	private pendingLarkCliTask: Promise<void> | null = null;
+	private cliManagementListeners = new Set<() => void>();
 	private larkCliRequestQueue: Promise<void> = Promise.resolve();
 	private larkCliActiveRequestCount = 0;
 	private lastLarkCliRequestAt = 0;
@@ -583,6 +806,8 @@ export default class LarkCliSyncPlugin extends Plugin {
 				window.clearTimeout(timer);
 			}
 			this.autoSyncTimers.clear();
+			this.cliManagementListeners.clear();
+			this.cancelPendingLarkCliAuthorization();
 		});
 
 		this.addCommand({
@@ -707,6 +932,10 @@ export default class LarkCliSyncPlugin extends Plugin {
 		this.settings = {
 			...DEFAULT_SETTINGS,
 			...savedSettingsWithoutTrimThreshold,
+			proxyMode: normalizeProxyMode(savedSettings?.proxyMode),
+			proxyHost: normalizeProxyHost(savedSettings?.proxyHost),
+			proxyPort: normalizeProxyPort(savedSettings?.proxyPort),
+			larkCliBrand: normalizeLarkCliBrand(savedSettings?.larkCliBrand),
 			stateCacheRetainLimit: this.normalizePositiveInteger(
 				savedSettings?.stateCacheRetainLimit,
 				DEFAULT_STATE_CACHE_RETAIN_LIMIT
@@ -817,6 +1046,274 @@ export default class LarkCliSyncPlugin extends Plugin {
 
 	async runLarkCliCommand(args: string[], options: LarkCommandOptions = {}): Promise<LarkCommandResult> {
 		return await this.runLarkCli(args, options);
+	}
+
+	subscribeLarkCliManagementChanges(listener: () => void): () => void {
+		(this.cliManagementListeners ??= new Set()).add(listener);
+		return () => {
+			this.cliManagementListeners?.delete(listener);
+		};
+	}
+
+	getPendingLarkCliAuthorization(): PendingLarkCliAuthorization | null {
+		return this.pendingLarkCliAuthorization ? { ...this.pendingLarkCliAuthorization } : null;
+	}
+
+	async getLarkCliManagementStatus(): Promise<LarkCliManagementStatus> {
+		this.clearLarkCliCommandCache();
+		const [versionProbe, npm] = await Promise.all([
+			this.probeLarkCliVersion(),
+			this.getNpmToolStatus()
+		]);
+		const auth: LarkCliAuthList = { configured: false, users: [] };
+		let authStatus: LarkCliAuthStatus | null = null;
+		let authError = "";
+
+		if (versionProbe.installed) {
+			const [authListResult, authStatusResult] = await Promise.all([
+				this.runLarkCliCapture(["auth", "list", "--json"], LARK_CLI_STATUS_TIMEOUT_MS),
+				this.runLarkCliCapture(["auth", "status", "--json"], LARK_CLI_STATUS_TIMEOUT_MS)
+			]);
+			const authList = authListResult.ok ? parseLarkCliAuthList(authListResult.stdout) : null;
+			if (authListResult.ok && authList) {
+				Object.assign(auth, authList);
+			}
+			if (authStatusResult.ok) {
+				authStatus = parseLarkCliAuthStatus(authStatusResult.stdout);
+				if (authStatus?.appId) auth.configured = true;
+			}
+			if (!authList && !authStatus) {
+				authError = authListResult.error || authStatusResult.error || "lark-cli returned an invalid auth status.";
+			}
+		}
+
+		let latestVersion = "";
+		let updateError = "";
+		if (versionProbe.installed) {
+			const latest = await this.getLatestLarkCliVersion(npm, versionProbe.installed);
+			latestVersion = latest.version;
+			updateError = latest.error;
+		}
+
+		return {
+			installed: versionProbe.installed,
+			version: versionProbe.version,
+			versionError: versionProbe.error,
+			supported: isSupportedLarkCliVersion(versionProbe.version),
+			npm,
+			latestVersion,
+			updateAvailable: Boolean(latestVersion && versionProbe.version
+				&& isLarkCliVersionNewer(latestVersion, versionProbe.version)),
+			updateError,
+			auth,
+			authStatus,
+			authError
+		};
+	}
+
+	async installOrUpgradeLarkCli(): Promise<LarkCliManagementStatus> {
+		if (this.pendingLarkCliAuthorization || this.pendingLarkCliTask) {
+			throw new Error(this.t("errorCliOperationPending"));
+		}
+
+		const npm = await this.getNpmToolStatus();
+		const versionProbe = await this.probeLarkCliVersion();
+		let result: RawCommandResult;
+		let installedWithNpm = false;
+		if (npm.available) {
+			result = await this.runNpmCapture([
+				"install", "-g", `${LARK_CLI_NPM_PACKAGE}@latest`, "--no-audit", "--no-fund"
+			], LARK_CLI_INSTALL_TIMEOUT_MS);
+			installedWithNpm = true;
+		} else if (versionProbe.installed) {
+			result = await this.runLarkCliCapture(["update", "--json"], LARK_CLI_INSTALL_TIMEOUT_MS);
+			const update = result.ok ? this.parseUpdateResult(result.stdout) : null;
+			if (update?.action === "manual_required") {
+				throw new Error(update.message || "lark-cli requires a manual update.");
+			}
+		} else {
+			throw new Error(this.t("errorCliInstallRequiresNode"));
+		}
+
+		if (!result.ok) {
+			throw new Error(result.error);
+		}
+		if (installedWithNpm && (this.settings.larkCliPath || "").trim() === DEFAULT_SETTINGS.larkCliPath) {
+			const npmLarkCliPath = await this.resolveNpmGlobalLarkCliPath();
+			if (npmLarkCliPath) {
+				this.settings.larkCliPath = npmLarkCliPath;
+			}
+		}
+
+		this.clearLarkCliCommandCache();
+		delete this.settings.larkCliVersionCheck;
+		await this.saveSettingsWithoutClearingCommandCache();
+		const status = await this.getLarkCliManagementStatus();
+		if (!status.installed) {
+			throw new Error(this.t("errorCliInstallNotDetected"));
+		}
+		if (!status.supported) {
+			throw new Error(formatUnsupportedLarkCliVersion(status.version, this.settings.language));
+		}
+		if (status.updateAvailable && status.latestVersion) {
+			throw new Error(this.t("errorCliUpgradeNotApplied"));
+		}
+		new Notice(this.t(versionProbe.installed ? "noticeCliUpgraded" : "noticeCliInstalled", {
+			version: status.version || "lark-cli"
+		}));
+		this.notifyLarkCliManagementChange();
+		return status;
+	}
+
+	async startLarkCliLogin(): Promise<PendingLarkCliAuthorization> {
+		const existing = this.pendingLarkCliAuthorization;
+		if (existing?.kind === "login") return { ...existing };
+		if (existing || this.pendingLarkCliTask) {
+			throw new Error(this.t("errorCliOperationPending"));
+		}
+
+		const result = await this.runLarkCliCapture([
+			"auth", "login",
+			"--recommend",
+			"--no-wait", "--json"
+		], 60_000);
+		if (!result.ok) throw new Error(result.error);
+		const authorization = parseLarkCliDeviceAuthorization(result.stdout);
+		if (!authorization) throw new Error(this.t("loginCliFailed", { message: "lark-cli did not return a device authorization." }));
+
+		const pending: PendingLarkCliAuthorization = {
+			kind: "login",
+			verificationUrl: authorization.verificationUrl,
+			startedAt: new Date().toISOString(),
+			deviceCode: authorization.deviceCode
+		};
+		this.pendingLarkCliAuthorization = pending;
+		this.openAuthorizationUrl(authorization.verificationUrl);
+		this.notifyLarkCliManagementChange();
+		this.startLarkCliLoginPolling(pending);
+		return { ...pending };
+	}
+
+	async logoutLarkCli(): Promise<void> {
+		this.cancelPendingLarkCliAuthorization();
+		const result = await this.runLarkCliCapture(["auth", "logout", "--json"], 60_000);
+		if (!result.ok) throw new Error(result.error);
+		new Notice(this.t("logoutCliSuccess"));
+		this.notifyLarkCliManagementChange();
+	}
+
+	cancelLarkCliAuthorization(): void {
+		this.cancelPendingLarkCliAuthorization();
+		this.notifyLarkCliManagementChange();
+	}
+
+	async startLarkCliAppConfiguration(brand: LarkCliBrand): Promise<void> {
+		if (this.pendingLarkCliAuthorization || this.pendingLarkCliTask) {
+			throw new Error(this.t("errorCliOperationPending"));
+		}
+
+		this.settings.larkCliBrand = normalizeLarkCliBrand(brand);
+		await this.saveSettingsWithoutClearingCommandCache();
+		const pending: PendingLarkCliAuthorization = {
+			kind: "app-configuration",
+			verificationUrl: "",
+			startedAt: new Date().toISOString()
+		};
+		this.pendingLarkCliAuthorization = pending;
+		this.notifyLarkCliManagementChange();
+
+		let output = "";
+		let opened = false;
+		const task = this.runLarkCliSpawn([
+			"config", "init", "--new",
+			"--brand", this.settings.larkCliBrand,
+			"--lang", this.settings.language === "en" ? "en" : "zh"
+		], LARK_CLI_CONFIGURATION_TIMEOUT_MS, (chunk) => {
+			output += chunk;
+			const verificationUrl = extractLarkCliVerificationUrl(output);
+			if (!verificationUrl || this.pendingLarkCliAuthorization !== pending) return;
+			if (pending.verificationUrl !== verificationUrl) {
+				pending.verificationUrl = verificationUrl;
+				this.notifyLarkCliManagementChange();
+			}
+			if (!opened) {
+				opened = true;
+				this.openAuthorizationUrl(verificationUrl);
+			}
+		});
+		const settled = task.then(() => {
+			if (this.pendingLarkCliAuthorization !== pending) return;
+			new Notice(this.t("cliAppSetupSuccess"));
+		}).catch((error: unknown) => {
+			if (this.pendingLarkCliAuthorization !== pending) return;
+			new Notice(this.t("cliAppSetupFailed", { message: this.formatNoticeErrorDetail(error) }));
+		}).finally(() => {
+			if (this.pendingLarkCliAuthorization === pending) {
+				this.pendingLarkCliAuthorization = null;
+			}
+			if (this.pendingLarkCliTask === settled) this.pendingLarkCliTask = null;
+			this.notifyLarkCliManagementChange();
+		});
+		this.pendingLarkCliTask = settled;
+	}
+
+	private startLarkCliLoginPolling(pending: PendingLarkCliAuthorization): void {
+		const deviceCode = pending.deviceCode || "";
+		if (!deviceCode) return;
+		const task = this.runLarkCliSpawn([
+			"auth", "login", "--device-code", deviceCode, "--json"
+		], LARK_CLI_LOGIN_TIMEOUT_MS);
+		const settled = task.then((result) => {
+			if (this.pendingLarkCliAuthorization !== pending) return;
+			const payload = this.tryParseJsonRecord(result.stdout);
+			const warning = payload && this.isRecord(payload.warning) ? payload.warning : null;
+			const warningMessage = warning && typeof warning.hint === "string" ? warning.hint : "";
+			new Notice(warningMessage
+				? this.t("loginCliScopeWarning", { message: warningMessage })
+				: this.t("loginCliSuccess"));
+		}).catch((error: unknown) => {
+			if (this.pendingLarkCliAuthorization !== pending) return;
+			new Notice(this.t("loginCliFailed", { message: this.formatNoticeErrorDetail(error) }));
+		}).finally(() => {
+			if (this.pendingLarkCliAuthorization === pending) {
+				this.pendingLarkCliAuthorization = null;
+			}
+			if (this.pendingLarkCliTask === settled) this.pendingLarkCliTask = null;
+			this.notifyLarkCliManagementChange();
+		});
+		this.pendingLarkCliTask = settled;
+	}
+
+	private cancelPendingLarkCliAuthorization(): void {
+		this.pendingLarkCliAuthorization = null;
+		if (this.pendingLarkCliChild && !this.pendingLarkCliChild.killed) {
+			try {
+				this.pendingLarkCliChild.kill();
+			} catch {
+				// The process may already have exited.
+			}
+		}
+		this.pendingLarkCliChild = null;
+		this.pendingLarkCliTask = null;
+	}
+
+	private notifyLarkCliManagementChange(): void {
+		for (const listener of [...(this.cliManagementListeners ?? [])]) {
+			try {
+				listener();
+			} catch (error) {
+				console.warn("[Feishu Docs Publisher] CLI status listener failed", error);
+			}
+		}
+	}
+
+	private openAuthorizationUrl(url: string): void {
+		if (!url) return;
+		try {
+			window.open(url, "_blank", "noopener,noreferrer");
+		} catch (error) {
+			console.warn("[Feishu Docs Publisher] failed to open authorization URL", error);
+		}
 	}
 
 	private async syncFile(file: TFile): Promise<void> {
@@ -1695,11 +2192,12 @@ exec "${nodePath}" "${scriptPath}" "$@"
 	private async publishFolderInternal(folderPath: string, overwrite = false): Promise<void> {
 		await (this.operationQueue ??= new SyncQueue()).run(() => this.withDeferredLarkSyncStateSave(async () => {
 			if (this.hasUnsavedSettings) await this.saveSettingsWithoutClearingCommandCache();
-			delete this.settings.disconnectedFolders?.[folderPath];
+			const reconnected = clearDisconnectedFolderPaths(this.settings.disconnectedFolders ??= {}, folderPath);
 			const files = this.collectMarkdownFiles(folderPath).filter((file) => !this.isFolderDisconnected(file.path));
 			const pdfFiles = this.app.vault.getFiles().filter((file) => file.extension.toLowerCase() === "pdf"
 				&& this.isPathWithin(file.path, folderPath) && !this.isFolderDisconnected(file.path));
 			if (files.length + pdfFiles.length === 0) {
+				if (reconnected) await this.saveSettingsWithoutClearingCommandCache();
 				new Notice(this.t("noticeNoMarkdownFilesInFolder"));
 				return;
 			}
@@ -4028,6 +4526,264 @@ exec "${nodePath}" "${scriptPath}" "$@"
 		return detail.slice(0, MAX_NOTICE_ERROR_DETAIL_LENGTH);
 	}
 
+	private async probeLarkCliVersion(): Promise<{ installed: boolean; version: string; error: string }> {
+		try {
+			const executable = await this.resolveLarkCliPath();
+			await this.resolveLarkCliInvocation(executable);
+		} catch (error) {
+			return { installed: false, version: "", error: this.formatCommandError(error) };
+		}
+
+		let lastError = "";
+		for (const args of LARK_CLI_VERSION_ARGS) {
+			const result = await this.runLarkCliCapture(args, 10_000);
+			if (result.launchError) {
+				return { installed: false, version: "", error: result.error };
+			}
+			if (result.ok) {
+				const output = `${result.stdout}\n${result.stderr}`;
+				const version = parseLarkCliVersion(output);
+				return {
+					installed: true,
+					version,
+					error: version ? "" : this.t("cliStatusVersionUnknown")
+				};
+			}
+			lastError = result.error;
+			if (!this.isUnsupportedVersionCommandError(new Error(result.error))) {
+				return { installed: true, version: "", error: result.error };
+			}
+		}
+
+		return { installed: true, version: "", error: lastError || this.t("cliStatusVersionUnknown") };
+	}
+
+	private async getNpmToolStatus(): Promise<LarkCliToolStatus> {
+		const loginShellPath = await this.resolveCommandFromLoginShell("npm").catch(() => "");
+		const candidates = uniquePathEntries([
+			loginShellPath,
+			process.platform === "win32" ? "npm.cmd" : "npm",
+			"npm"
+		]);
+		let lastError = "";
+		for (const candidate of candidates) {
+			const result = await this.runExecutableCapture(candidate, ["--version"], 10_000);
+			if (result.ok) {
+				const version = parseNpmVersionOutput(`${result.stdout}\n${result.stderr}`);
+				return { available: true, version, path: candidate, error: "" };
+			}
+			lastError = result.error;
+		}
+		return { available: false, version: "", path: "", error: lastError };
+	}
+
+	private async getLatestLarkCliVersion(
+		npm: LarkCliToolStatus,
+		installed: boolean
+	): Promise<{ version: string; error: string }> {
+		if (npm.available) {
+			const result = await this.runNpmCapture([
+				"view", LARK_CLI_NPM_PACKAGE, "version", "--json"
+			], 15_000);
+			if (result.ok) {
+				const version = parseNpmVersionOutput(`${result.stdout}\n${result.stderr}`);
+				if (version) return { version, error: "" };
+			}
+			return { version: "", error: result.error };
+		}
+
+		if (installed) {
+			const result = await this.runLarkCliCapture(["update", "--check", "--json"], LARK_CLI_STATUS_TIMEOUT_MS);
+			if (result.ok) {
+				const update = parseLarkCliUpdateCheck(result.stdout);
+				if (update?.latestVersion) return { version: update.latestVersion, error: "" };
+			}
+			return { version: "", error: result.error };
+		}
+
+		return { version: "", error: "" };
+	}
+
+	private async runLarkCliCapture(args: string[], timeoutMs: number): Promise<RawCommandResult> {
+		try {
+			const executable = await this.resolveLarkCliPath();
+			const env = await this.buildCommandEnvironment(executable);
+			const invocation = await this.resolveLarkCliInvocation(executable);
+			const { stdout, stderr } = await execFileAsync(invocation.executable, [
+				...invocation.argsPrefix,
+				...args
+			], {
+				env,
+				maxBuffer: 5 * 1024 * 1024,
+				timeout: timeoutMs,
+				windowsHide: true
+			});
+			return {
+				ok: true,
+				stdout: this.commandOutputToString(stdout),
+				stderr: this.commandOutputToString(stderr),
+				error: "",
+				launchError: false
+			};
+		} catch (error) {
+			return {
+				ok: false,
+				stdout: this.hasCommandStdout(error) ? this.commandOutputToString(error.stdout) : "",
+				stderr: this.hasCommandStderr(error) ? this.commandOutputToString(error.stderr) : "",
+				error: this.formatCommandError(error),
+				launchError: this.isExecutableLaunchError(error)
+			};
+		}
+	}
+
+	private async runNpmCapture(args: string[], timeoutMs: number): Promise<RawCommandResult> {
+		const npm = await this.getNpmToolStatus();
+		if (!npm.available) {
+			return {
+				ok: false,
+				stdout: "",
+				stderr: "",
+				error: this.t("errorCliInstallRequiresNode"),
+				launchError: true
+			};
+		}
+		return await this.runExecutableCapture(npm.path, args, timeoutMs);
+	}
+
+	private async resolveNpmGlobalLarkCliPath(): Promise<string> {
+		const result = await this.runNpmCapture(["prefix", "-g"], 10_000);
+		if (!result.ok) return "";
+		const prefix = result.stdout.trim().split(/\r?\n/).at(-1)?.trim() || "";
+		if (!prefix) return "";
+		const candidates = process.platform === "win32"
+			? [join(prefix, "lark-cli.cmd"), join(prefix, "lark-cli.exe")]
+			: [join(prefix, "bin", "lark-cli")];
+		for (const candidate of candidates) {
+			if (await this.canExecute(candidate)) return candidate;
+		}
+		return "";
+	}
+
+	private async runExecutableCapture(
+		executable: string,
+		args: string[],
+		timeoutMs: number
+	): Promise<RawCommandResult> {
+		try {
+			const env = await this.buildCommandEnvironment(executable);
+			const { stdout, stderr } = await execFileAsync(executable, args, {
+				env,
+				maxBuffer: 20 * 1024 * 1024,
+				timeout: timeoutMs,
+				windowsHide: true,
+				shell: process.platform === "win32" && /\.(cmd|bat)$/i.test(executable)
+			});
+			return {
+				ok: true,
+				stdout: this.commandOutputToString(stdout),
+				stderr: this.commandOutputToString(stderr),
+				error: "",
+				launchError: false
+			};
+		} catch (error) {
+			return {
+				ok: false,
+				stdout: this.hasCommandStdout(error) ? this.commandOutputToString(error.stdout) : "",
+				stderr: this.hasCommandStderr(error) ? this.commandOutputToString(error.stderr) : "",
+				error: this.formatCommandError(error),
+				launchError: this.isExecutableLaunchError(error)
+			};
+		}
+	}
+
+	private async runLarkCliSpawn(
+		args: string[],
+		timeoutMs: number,
+		onOutput?: (chunk: string) => void
+	): Promise<RawCommandCapture> {
+		const executable = await this.resolveLarkCliPath();
+		const env = await this.buildCommandEnvironment(executable);
+		const invocation = await this.resolveLarkCliInvocation(executable);
+		return await new Promise<RawCommandCapture>((resolve, reject) => {
+			let child: ChildProcess;
+			try {
+				child = spawn(invocation.executable, [...invocation.argsPrefix, ...args], {
+					env,
+					stdio: ["ignore", "pipe", "pipe"],
+					windowsHide: true
+				});
+			} catch (error) {
+				reject(this.toError(error));
+				return;
+			}
+
+			this.pendingLarkCliChild = child;
+			let stdout = "";
+			let stderr = "";
+			let finished = false;
+			const finish = (error?: Error, result?: RawCommandCapture): void => {
+				if (finished) return;
+				finished = true;
+				window.clearTimeout(timeout);
+				if (this.pendingLarkCliChild === child) this.pendingLarkCliChild = null;
+				if (error) reject(error);
+				else resolve(result || { stdout, stderr });
+			};
+			const timeout = window.setTimeout(() => {
+				if (finished) return;
+				try {
+					child.kill();
+				} catch {
+					// The process may already have exited.
+				}
+				finish(new Error(this.settings.language === "en"
+					? "The CLI operation timed out."
+					: "CLI 操作超时。"));
+			}, timeoutMs);
+			child.stdout?.on("data", (chunk: Buffer | string) => {
+				const text = this.commandOutputToString(chunk);
+				stdout += text;
+				onOutput?.(text);
+			});
+			child.stderr?.on("data", (chunk: Buffer | string) => {
+				const text = this.commandOutputToString(chunk);
+				stderr += text;
+				onOutput?.(text);
+			});
+			child.on("error", (error) => finish(error instanceof Error ? error : new Error(String(error))));
+			child.on("close", (code) => {
+				if (finished) return;
+				if (code === 0) finish(undefined, { stdout, stderr });
+				else finish(new Error(this.formatSpawnFailure(code, stdout, stderr)));
+			});
+		});
+	}
+
+	private formatSpawnFailure(code: number | null, stdout: string, stderr: string): string {
+		const details = parseLarkCliError(stderr) || parseLarkCliError(stdout);
+		if (details?.message) {
+			return details.hint ? `${details.message}\n${details.hint}` : details.message;
+		}
+		const output = (stderr.trim() || stdout.trim());
+		if (output) return output.slice(0, MAX_STDERR_LENGTH);
+		return this.settings.language === "en"
+			? `lark-cli exited with code ${code ?? "unknown"}.`
+			: `lark-cli 退出，代码 ${code ?? "未知"}。`;
+	}
+
+	private parseUpdateResult(rawJson: string): LarkCliUpdateCheck | null {
+		return parseLarkCliUpdateCheck(rawJson);
+	}
+
+	private tryParseJsonRecord(rawJson: string): Record<string, unknown> | null {
+		try {
+			const parsed: unknown = JSON.parse(rawJson);
+			return this.isRecord(parsed) ? parsed : null;
+		} catch {
+			return null;
+		}
+	}
+
 	private isRemoteDocumentDeletedError(error: unknown): boolean {
 		const message = error instanceof Error ? error.message : String(error);
 		return message.includes("3380003")
@@ -4048,9 +4804,9 @@ exec "${nodePath}" "${scriptPath}" "$@"
 			return this.cachedCommandEnvironment;
 		}
 
-		const env = buildLarkCommandEnvironment(executable, {
+		const env = applyProxyEnvironment(buildLarkCommandEnvironment(executable, {
 			loginShellPath: shellPath
-		});
+		}), this.settings);
 		this.cachedCommandEnvironment = env;
 		this.cachedCommandEnvironmentExecutable = executable;
 		this.cachedCommandEnvironmentShellPath = shellPath;
@@ -4413,7 +5169,7 @@ exec "${nodePath}" "${scriptPath}" "$@"
 			const wiki = data.wiki_node;
 			if (data.type !== "folder" && !wiki?.node_token) throw new Error(this.t("invalidPublishedLink"));
 			await this.disconnectFolderBinding(entry.path);
-			delete this.settings.disconnectedFolders?.[entry.path];
+			clearDisconnectedFolderPaths(this.settings.disconnectedFolders ??= {}, entry.path);
 			const parent: RemoteParent = { kind: data.type === "folder" ? "drive" : "wiki", token: wiki?.node_token || data.token };
 			this.savePublishedFolderBinding(entry.path, parent, "");
 			this.settings.folderBindings[this.getFolderBindingKey(parent, "")] = { token: parent.token, url, containerKind: parent.kind };
@@ -4555,11 +5311,20 @@ exec "${nodePath}" "${scriptPath}" "$@"
 
 	private async syncPdfFileUnlocked(file: TFile, parent?: RemoteParent, overwrite = false): Promise<void> {
 		if (this.hasUnsavedSettings) await this.saveSettingsWithoutClearingCommandCache();
-		const existing = this.settings.pdfBindings[file.path];
+		let existing = this.settings.pdfBindings[file.path];
 		if (existing?.fileToken) await this.resolveExclusiveRemoteBinding(file.path,
 			{ token: existing.fileToken, nodeToken: existing.nodeToken, url: existing.url || "" });
-		const destination = existing?.parent || this.toPdfParent(parent
-			|| (await this.resolvePublishedFolderParentForFile(file))?.parent || await this.resolveRemoteRootParent());
+		const folderParent = parent || (await this.resolvePublishedFolderParentForFile(file))?.parent;
+		const destination = this.toPdfParent(folderParent || existing?.parent || await this.resolveRemoteRootParent());
+		const parentChanged = Boolean(existing && (existing.parent.kind !== destination.kind
+			|| existing.parent.token !== destination.token));
+		if (existing?.fileToken && (parentChanged || !(await this.remoteFileExists(destination, existing.fileToken)))) {
+			// The saved binding can outlive a deleted or moved remote file. Drop it so
+			// the upload runs again instead of reporting an unchanged PDF.
+			delete this.settings.pdfBindings[file.path];
+			await this.saveSettingsWithoutClearingCommandCache();
+			existing = undefined;
+		}
 		const options = { vaultRoot: this.getVaultRoot(), vaultPath: file.path, parent: destination, scope: existing?.scope || "user", force: overwrite };
 		if (overwrite && !existing) {
 			const match = this.selectOverwriteMatch(file.path, (await this.listRemoteDocuments(destination, "file")).filter((document) => document.title === file.name));
@@ -4586,6 +5351,11 @@ exec "${nodePath}" "${scriptPath}" "$@"
 				{ token: binding.fileToken!, nodeToken: binding.nodeToken, url: binding.url || "" }, "file");
 			if (removed) new Notice(this.t("noticeRemovedDuplicates", { count: String(removed) }), 8000);
 		}
+	}
+
+	private async remoteFileExists(parent: RemoteParent, fileToken: string): Promise<boolean> {
+		const files = await this.listRemoteDocuments(parent, "file");
+		return files.some((file) => file.token === fileToken);
 	}
 
 	private async listRemoteWikiNodes(parent: RemoteParent): Promise<LarkCommandNode[]> {
@@ -4742,15 +5512,27 @@ exec "${nodePath}" "${scriptPath}" "$@"
 
 class LarkCliSyncSettingTab extends PluginSettingTab {
 	private readonly plugin: LarkCliSyncPlugin;
+	private unsubscribeCliManagement: (() => void) | null = null;
 
 	constructor(app: import("obsidian").App, plugin: LarkCliSyncPlugin) {
 		super(app, plugin);
 		this.plugin = plugin;
 	}
 
+	override hide(): void {
+		this.unsubscribeCliManagement?.();
+		this.unsubscribeCliManagement = null;
+		super.hide();
+	}
+
 	display(): void {
 		const { containerEl } = this;
+		this.unsubscribeCliManagement?.();
+		this.unsubscribeCliManagement = null;
 		containerEl.empty();
+		this.unsubscribeCliManagement = this.plugin.subscribeLarkCliManagementChanges(() => {
+			if (containerEl.isConnected) this.display();
+		});
 
 		new Setting(containerEl).setName(this.plugin.t("settingsTitle")).setHeading();
 
@@ -4768,16 +5550,6 @@ class LarkCliSyncSettingTab extends PluginSettingTab {
 			});
 
 		new Setting(generalSectionEl)
-			.setName(this.plugin.t("settingLarkCliPathName"))
-			.setDesc(this.plugin.t("settingLarkCliPathDesc"))
-			.addText((text) => {
-				text.setPlaceholder("lark-cli").setValue(this.plugin.settings.larkCliPath).onChange(async (value) => {
-					this.plugin.settings.larkCliPath = value.trim() || DEFAULT_SETTINGS.larkCliPath;
-					await this.plugin.saveSettings();
-				});
-			});
-
-		new Setting(generalSectionEl)
 			.setName(this.plugin.t("settingDefaultTargetName"))
 			.setDesc(this.plugin.t("settingDefaultTargetDesc"))
 			.addText((text) => {
@@ -4787,6 +5559,9 @@ class LarkCliSyncSettingTab extends PluginSettingTab {
 						await this.plugin.saveSettings();
 					});
 				});
+
+		this.renderCliSection(containerEl);
+		this.renderProxySection(containerEl);
 
 		const contentSectionEl = this.createSection(containerEl, "settingsSectionContent");
 		new Setting(contentSectionEl)
@@ -4888,6 +5663,376 @@ class LarkCliSyncSettingTab extends PluginSettingTab {
 				});
 			});
 		this.renderPrePushHookStatus(installPrePushHookSetting);
+	}
+
+	private renderCliSection(containerEl: HTMLElement): void {
+		const sectionEl = this.createSection(containerEl, "settingsSectionCli");
+		let latestStatus: LarkCliManagementStatus | null = null;
+		let installBusy = false;
+		let authBusy = false;
+		let loginBusy = false;
+		let configBusy = false;
+		let refreshButton: ButtonComponent | null = null;
+		let actionButton: ButtonComponent | null = null;
+		let loginButton: ButtonComponent | null = null;
+		let logoutButton: ButtonComponent | null = null;
+		let openAuthorizationButton: ButtonComponent | null = null;
+		let cancelAuthorizationButton: ButtonComponent | null = null;
+		let configButton: ButtonComponent | null = null;
+		let configDropdown: import("obsidian").DropdownComponent | null = null;
+
+		const statusEl = new Setting(sectionEl)
+			.setName(this.plugin.t("settingLarkCliStatusName"))
+			.setDesc(this.plugin.t("settingLarkCliStatusDesc"))
+			.addButton((button) => {
+				refreshButton = button;
+				button.setButtonText(this.plugin.t("recheckCliButton")).onClick(() => {
+					void refreshStatus();
+				});
+			})
+			.addButton((button) => {
+				actionButton = button;
+				button.setButtonText(this.plugin.t("installCliButton")).setDisabled(true).onClick(async () => {
+					if (installBusy || !latestStatus) return;
+					if (!latestStatus.npm.available && !latestStatus.installed) {
+						window.open(NODE_DOWNLOAD_URL, "_blank", "noopener,noreferrer");
+						return;
+					}
+					installBusy = true;
+					updateCliButtons();
+					try {
+						await this.plugin.installOrUpgradeLarkCli();
+					} catch (error) {
+						new Notice(this.plugin.t("noticeCliInstallFailed", {
+							message: this.formatOperationError(error)
+						}));
+					} finally {
+						installBusy = false;
+						await refreshStatus();
+					}
+				});
+			}).descEl.createDiv({ cls: "feishu-lark-cli-status is-muted", text: this.plugin.t("cliStatusChecking") });
+
+		new Setting(sectionEl)
+			.setName(this.plugin.t("settingLarkCliPathName"))
+			.setDesc(this.plugin.t("settingLarkCliPathDesc"))
+			.addText((text) => {
+				text.setPlaceholder("lark-cli").setValue(this.plugin.settings.larkCliPath).onChange(async (value) => {
+					this.plugin.settings.larkCliPath = value.trim() || DEFAULT_SETTINGS.larkCliPath;
+					await this.plugin.saveSettings();
+				});
+			});
+
+		const accountStatusEl = new Setting(sectionEl)
+			.setName(this.plugin.t("settingLarkCliAccountName"))
+			.setDesc(this.plugin.t("settingLarkCliAccountDesc"))
+			.addButton((button) => {
+				loginButton = button;
+				button.setButtonText(this.plugin.t("loginCliButton")).setDisabled(true).onClick(async () => {
+					if (authBusy) return;
+					const pending = this.plugin.getPendingLarkCliAuthorization();
+					if (pending?.kind === "login" && pending.verificationUrl) {
+						window.open(pending.verificationUrl, "_blank", "noopener,noreferrer");
+						return;
+					}
+					authBusy = true;
+					loginBusy = true;
+					updateCliButtons();
+					try {
+						await this.plugin.startLarkCliLogin();
+					} catch (error) {
+						new Notice(this.plugin.t("loginCliFailed", { message: this.formatOperationError(error) }));
+					} finally {
+						authBusy = false;
+						loginBusy = false;
+						await refreshStatus();
+					}
+				});
+			})
+			.addButton((button) => {
+				openAuthorizationButton = button;
+				button.setButtonText(this.plugin.t("loginCliOpenButton")).setDisabled(true).onClick(() => {
+					const pending = this.plugin.getPendingLarkCliAuthorization();
+					if (pending?.verificationUrl) {
+						window.open(pending.verificationUrl, "_blank", "noopener,noreferrer");
+					}
+				});
+			})
+			.addButton((button) => {
+				cancelAuthorizationButton = button;
+				button.setButtonText(this.plugin.t("cancelCliOperationButton")).setDisabled(true).onClick(() => {
+					this.plugin.cancelLarkCliAuthorization();
+					void refreshStatus();
+				});
+			})
+			.addButton((button) => {
+				logoutButton = button;
+				button.setButtonText(this.plugin.t("logoutCliButton")).setDisabled(true).onClick(async () => {
+					if (authBusy) return;
+					authBusy = true;
+					updateCliButtons();
+					try {
+						await this.plugin.logoutLarkCli();
+					} catch (error) {
+						new Notice(this.plugin.t("logoutCliFailed", { message: this.formatOperationError(error) }));
+					} finally {
+						authBusy = false;
+						await refreshStatus();
+					}
+				});
+			}).descEl.createDiv({ cls: "feishu-lark-cli-status is-muted", text: this.plugin.t("cliAccountChecking") });
+
+		const configSetting = new Setting(sectionEl)
+			.setName(this.plugin.t("cliAppSetupName"))
+			.setDesc(this.plugin.t("cliAppSetupDesc"))
+			.addDropdown((dropdown) => {
+				configDropdown = dropdown;
+				dropdown.addOption("feishu", this.plugin.t("brandFeishu"))
+					.addOption("lark", this.plugin.t("brandLark"))
+					.setValue(this.plugin.settings.larkCliBrand)
+					.onChange(async (value) => {
+						this.plugin.settings.larkCliBrand = normalizeLarkCliBrand(value);
+						await this.plugin.saveSettings();
+					});
+			})
+			.addButton((button) => {
+				configButton = button;
+				button.setButtonText(this.plugin.t("createCliAppButton")).setDisabled(true).onClick(async () => {
+					if (configBusy) return;
+					configBusy = true;
+					updateCliButtons();
+					try {
+						await this.plugin.startLarkCliAppConfiguration(this.plugin.settings.larkCliBrand);
+					} catch (error) {
+						new Notice(this.plugin.t("cliAppSetupFailed", { message: this.formatOperationError(error) }));
+					} finally {
+						configBusy = false;
+						await refreshStatus();
+					}
+				});
+			});
+		configSetting.settingEl.style.display = "none";
+		const configStatusEl = configSetting.descEl.createDiv({ cls: "feishu-lark-cli-status is-muted" });
+
+		const renderStatus = (): void => {
+			if (!latestStatus) return;
+			const lines: string[] = [];
+			if (!latestStatus.installed) {
+				lines.push(this.plugin.t("cliStatusMissing"));
+			} else if (latestStatus.version) {
+				lines.push(this.plugin.t("cliStatusInstalled", { version: latestStatus.version }));
+				if (!latestStatus.supported) {
+					lines.push(this.plugin.t("cliStatusUnsupported", {
+						version: latestStatus.version,
+						minimum: MIN_EXCLUSIVE_LARK_CLI_VERSION
+					}));
+				}
+			} else {
+				lines.push(this.plugin.t("cliStatusVersionUnknown"));
+			}
+			lines.push(latestStatus.npm.available
+				? this.plugin.t("cliStatusNpmReady", { version: latestStatus.npm.version || "npm" })
+				: this.plugin.t("cliStatusNpmMissing"));
+			if (latestStatus.installed) {
+				if (latestStatus.latestVersion && latestStatus.updateAvailable) {
+					lines.push(this.plugin.t("cliStatusUpdateAvailable", { version: latestStatus.latestVersion }));
+				} else if (latestStatus.latestVersion) {
+					lines.push(this.plugin.t("cliStatusUpToDate"));
+				} else if (latestStatus.updateError) {
+					lines.push(this.plugin.t("cliStatusUpdateUnknown"));
+				}
+			}
+			statusEl.setText(lines.join("\n"));
+			statusEl.removeClass("is-success", "is-warning", "is-error", "is-muted");
+			if (!latestStatus.installed) statusEl.addClass("is-warning");
+			else if (!latestStatus.supported) statusEl.addClass("is-error");
+			else if (!latestStatus.npm.available || latestStatus.updateAvailable) statusEl.addClass("is-warning");
+			else statusEl.addClass("is-success");
+		};
+
+		const updateCliButtons = (): void => {
+			const pending = this.plugin.getPendingLarkCliAuthorization();
+			const configured = latestStatus?.auth.configured === true;
+			const authError = Boolean(latestStatus?.authError);
+			const hasAccount = Boolean(latestStatus?.authStatus?.loggedIn
+				|| latestStatus?.auth.users.some((user) => user.tokenStatus && user.tokenStatus !== "no_token"));
+
+			if (latestStatus) {
+				const status = latestStatus;
+				accountStatusEl.setText(pending?.kind === "app-configuration"
+					? this.plugin.t("cliAppSetupWaiting")
+					: pending?.kind === "login"
+						? this.plugin.t("loginCliWaiting")
+						: status.authError
+							? this.plugin.t("cliAccountError", { message: this.formatOperationError(status.authError) })
+							: !status.installed
+								? this.plugin.t("cliStatusMissing")
+								: !status.auth.configured
+									? this.plugin.t("cliAccountNotConfigured")
+									: hasAccount
+										? this.plugin.t("cliAccountLoggedIn", {
+											user: status.authStatus?.userName || status.auth.users[0]?.userName || "Lark",
+											brand: status.authStatus?.brand?.toLowerCase() === "lark"
+												? this.plugin.t("brandLark")
+												: this.plugin.t("brandFeishu")
+										})
+										: this.plugin.t("cliAccountLoggedOut"));
+				accountStatusEl.removeClass("is-success", "is-warning", "is-error", "is-muted");
+				if (!status.installed) accountStatusEl.addClass("is-error");
+				else if (pending) accountStatusEl.addClass("is-warning");
+				else if (status.authError) accountStatusEl.addClass("is-error");
+				else if (!configured || !hasAccount) accountStatusEl.addClass("is-warning");
+				else accountStatusEl.addClass("is-success");
+
+				if (actionButton) {
+					actionButton.setDisabled(installBusy || Boolean(pending) || authBusy || configBusy);
+					actionButton.setButtonText(installBusy
+						? this.plugin.t(status.installed ? "upgradingCli" : "installingCli")
+						: !status.installed
+							? this.plugin.t(status.npm.available ? "installCliButton" : "installNodeButton")
+							: status.updateAvailable && status.latestVersion
+								? this.plugin.t("upgradeCliVersionButton", { version: status.latestVersion })
+								: status.latestVersion
+									? this.plugin.t("reinstallCliButton")
+									: this.plugin.t("upgradeCliButton"));
+				}
+			}
+
+			if (loginButton) {
+				loginButton.setDisabled(installBusy || authBusy || (!configured && !authError) || !latestStatus?.installed
+					|| pending?.kind === "app-configuration" || pending?.kind === "login");
+				loginButton.setButtonText(pending?.kind === "login"
+					? this.plugin.t("loginCliWaitingButton")
+					: loginBusy
+						? this.plugin.t("loginCliOpening")
+						: this.plugin.t("loginCliButton"));
+			}
+			if (openAuthorizationButton) {
+				openAuthorizationButton.setDisabled(!pending?.verificationUrl);
+				openAuthorizationButton.buttonEl.style.display = pending?.verificationUrl ? "" : "none";
+			}
+			if (cancelAuthorizationButton) {
+				cancelAuthorizationButton.setDisabled(!pending);
+				cancelAuthorizationButton.buttonEl.style.display = pending ? "" : "none";
+			}
+			if (logoutButton) {
+				logoutButton.setDisabled(installBusy || authBusy || !configured
+					|| !hasAccount);
+			}
+
+			const showConfig = Boolean(latestStatus?.installed && !authError && !configured);
+			configSetting.settingEl.style.display = showConfig ? "" : "none";
+			if (showConfig) {
+				const setupRunning = pending?.kind === "app-configuration" || configBusy || installBusy;
+				if (configDropdown) configDropdown.setDisabled(setupRunning);
+				if (configButton) {
+					configButton.setDisabled(setupRunning);
+					configButton.setButtonText(setupRunning
+						? this.plugin.t("cliAppSetupStarting")
+						: this.plugin.t("createCliAppButton"));
+				}
+				configStatusEl.setText(setupRunning ? this.plugin.t("cliAppSetupWaiting") : "");
+			}
+		};
+
+		const refreshStatus = async (): Promise<void> => {
+			statusEl.setText(this.plugin.t("cliStatusChecking"));
+			accountStatusEl.setText(this.plugin.t("cliAccountChecking"));
+			if (refreshButton) refreshButton.setDisabled(true);
+			if (actionButton) actionButton.setDisabled(true);
+			try {
+				const status = await this.plugin.getLarkCliManagementStatus();
+				if (!statusEl.isConnected) return;
+				latestStatus = status;
+				renderStatus();
+				updateCliButtons();
+			} catch (error) {
+				if (!statusEl.isConnected) return;
+				statusEl.setText(this.plugin.t("cliStatusUpdateUnknown"));
+				statusEl.removeClass("is-success", "is-warning", "is-error", "is-muted");
+				statusEl.addClass("is-error");
+				accountStatusEl.setText(this.plugin.t("cliAccountError", {
+					message: this.formatOperationError(error)
+				}));
+			} finally {
+				if (refreshButton) refreshButton.setDisabled(false);
+			}
+		};
+
+		updateCliButtons();
+		void refreshStatus();
+	}
+
+	private renderProxySection(containerEl: HTMLElement): void {
+		const sectionEl = this.createSection(containerEl, "settingsSectionNetwork");
+		const modeSetting = new Setting(sectionEl)
+			.setName(this.plugin.t("settingProxyModeName"))
+			.setDesc(this.plugin.t("settingProxyModeDesc"))
+			.addDropdown((dropdown) => {
+				dropdown.addOption("system", this.plugin.t("proxyModeSystem"))
+					.addOption("custom", this.plugin.t("proxyModeCustom"))
+					.addOption("off", this.plugin.t("proxyModeOff"))
+					.setValue(this.plugin.settings.proxyMode)
+					.onChange(async (value) => {
+						this.plugin.settings.proxyMode = normalizeProxyMode(value);
+						await this.plugin.saveSettings();
+						updateProxySettings();
+					});
+			});
+		const systemProxyEl = modeSetting.descEl.createDiv({ cls: "feishu-lark-proxy-detail" });
+
+		const hostSetting = new Setting(sectionEl)
+			.setName(this.plugin.t("proxyHostName"))
+			.setDesc(this.plugin.t("proxyHostDesc"))
+			.addText((text) => {
+				text.setPlaceholder(DEFAULT_PROXY_HOST)
+					.setValue(this.plugin.settings.proxyHost)
+					.onChange(async (value) => {
+						this.plugin.settings.proxyHost = normalizeProxyHost(value);
+						await this.plugin.saveSettings();
+						updateProxySettings();
+					});
+			});
+
+		const portSetting = new Setting(sectionEl)
+			.setName(this.plugin.t("proxyPortName"))
+			.setDesc(this.plugin.t("proxyPortDesc"))
+			.addText((text) => {
+				text.setPlaceholder(String(DEFAULT_PROXY_PORT))
+					.setValue(String(this.plugin.settings.proxyPort))
+					.onChange(async (value) => {
+						this.plugin.settings.proxyPort = normalizeProxyPort(value);
+						await this.plugin.saveSettings();
+						updateProxySettings();
+					});
+			});
+
+		const proxyDetailEl = portSetting.descEl.createDiv({ cls: "feishu-lark-proxy-detail" });
+		const updateProxySettings = (): void => {
+			const mode = normalizeProxyMode(this.plugin.settings.proxyMode);
+			const custom = mode === "custom";
+			hostSetting.settingEl.style.display = custom ? "" : "none";
+			portSetting.settingEl.style.display = custom ? "" : "none";
+			if (mode === "system") {
+				const detected = detectProxyEnvironment(process.env);
+				systemProxyEl.setText(detected
+					? this.plugin.t("proxySystemDetected", { key: detected.key, value: detected.value })
+					: this.plugin.t("proxySystemNotDetected"));
+			} else {
+				systemProxyEl.setText("");
+			}
+			proxyDetailEl.setText(custom
+				? this.plugin.t("proxyCustomStatus", {
+					url: buildProxyUrl(this.plugin.settings.proxyHost, this.plugin.settings.proxyPort)
+				})
+				: "");
+		};
+		updateProxySettings();
+	}
+
+	private formatOperationError(error: unknown): string {
+		const message = error instanceof Error ? error.message : String(error);
+		return (message.split("\n").find((line) => line.trim()) || message).trim().slice(0, MAX_NOTICE_ERROR_DETAIL_LENGTH);
 	}
 
 	private createSection(containerEl: HTMLElement, titleKey: MessageKey): HTMLElement {

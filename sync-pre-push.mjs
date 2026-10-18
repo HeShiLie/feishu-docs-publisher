@@ -6,6 +6,7 @@ import { basename, dirname, join, relative, resolve, sep } from "path";
 import { tmpdir } from "os";
 import { promisify } from "util";
 import {
+	applyProxyEnvironment,
 	buildCommandEnvironment,
 	formatMissingLarkCli,
 	formatUnsupportedLarkCliVersion,
@@ -1110,7 +1111,7 @@ async function runLarkCliWithRetry(settings, args, cwd) {
 
 async function runLarkCliOnce(settings, args, cwd) {
 	const executable = await resolveLarkCliPath(settings);
-	const env = buildCommandEnvironment(executable);
+	const env = applyProxyEnvironment(buildCommandEnvironment(executable), settings);
 	await ensureSupportedLarkCliVersion(settings, executable, env);
 	const invocation = await resolveInvocation(executable);
 	const { stdout } = await execFileAsync(invocation.executable, [...invocation.argsPrefix, ...args], {

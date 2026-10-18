@@ -5,6 +5,8 @@ import process from "process";
 export const LARK_CLI_COMMAND = "lark-cli";
 export const LARK_DOCS_API_VERSION = "v2";
 export const MIN_EXCLUSIVE_LARK_CLI_VERSION = "1.0.53";
+export const DEFAULT_PROXY_HOST = "127.0.0.1";
+export const DEFAULT_PROXY_PORT = 7890;
 
 const WINDOWS_LARK_CLI_SHIMS = [
 	"C:\\nvm4w\\nodejs\\lark-cli.cmd",
@@ -20,6 +22,36 @@ const FALLBACK_PATH_ENTRIES = [
 	"/sbin"
 ];
 const DOCS_V2_SUBCOMMANDS = new Set(["+create", "+fetch", "+update"]);
+const PROXY_ENVIRONMENT_KEYS = [
+	"HTTP_PROXY", "http_proxy",
+	"HTTPS_PROXY", "https_proxy",
+	"ALL_PROXY", "all_proxy",
+	"npm_config_proxy", "npm_config_https_proxy"
+];
+const LARK_PROXY_PLUGIN_KEYS = [
+	"LARKSUITE_CLI_PROXY_ENABLE",
+	"LARKSUITE_CLI_PROXY_ADDRESS",
+	"LARKSUITE_CLI_CA_PATH"
+];
+const SYSTEM_PROXY_ENVIRONMENT_KEYS = [
+	"HTTPS_PROXY", "https_proxy",
+	"HTTP_PROXY", "http_proxy",
+	"ALL_PROXY", "all_proxy",
+	"LARKSUITE_CLI_PROXY_ADDRESS"
+];
+
+export type LarkCliProxyMode = "system" | "custom" | "off";
+
+export interface LarkCliProxySettings {
+	proxyMode: LarkCliProxyMode;
+	proxyHost: string;
+	proxyPort: number;
+}
+
+export interface LarkCliProxyEnvironment {
+	key: string;
+	value: string;
+}
 
 export interface LarkCliPathHost {
 	env?: Record<string, string | undefined>;
@@ -142,6 +174,110 @@ export function buildCommandEnvironment(
 		...env,
 		PATH: uniquePathEntries(pathEntries).join(delimiter)
 	};
+}
+
+export function normalizeProxyMode(value: unknown): LarkCliProxyMode {
+	return value === "custom" || value === "off" || value === "system" ? value : "system";
+}
+
+export function normalizeProxyHost(value: unknown): string {
+	if (typeof value !== "string") return DEFAULT_PROXY_HOST;
+	let host = value.trim();
+	if (!host) return DEFAULT_PROXY_HOST;
+
+	let candidate = host;
+	if (!/^[a-z][a-z\d+.-]*:\/\//i.test(candidate)) {
+		if (!candidate.startsWith("[") && (candidate.match(/:/g) || []).length > 1) {
+			candidate = `[${candidate}]`;
+		}
+		candidate = `http://${candidate}`;
+	}
+	try {
+		host = new URL(candidate).hostname;
+	} catch {
+		return DEFAULT_PROXY_HOST;
+	}
+
+	host = host.replace(/^\[(.*)\]$/, "$1").replace(/\/+$/, "");
+	return host || DEFAULT_PROXY_HOST;
+}
+
+export function normalizeProxyPort(value: unknown): number {
+	const numericValue = typeof value === "number"
+		? value
+		: typeof value === "string"
+			? Number.parseInt(value, 10)
+			: Number.NaN;
+	if (!Number.isFinite(numericValue) || numericValue < 1 || numericValue > 65535) {
+		return DEFAULT_PROXY_PORT;
+	}
+	return Math.floor(numericValue);
+}
+
+export function buildProxyUrl(host: string, port: number): string {
+	const normalizedHost = normalizeProxyHost(host);
+	const normalizedPort = normalizeProxyPort(port);
+	const urlHost = normalizedHost.includes(":") ? `[${normalizedHost}]` : normalizedHost;
+	return `http://${urlHost}:${normalizedPort}`;
+}
+
+/**
+ * Apply only the proxy policy used by child processes started by this plugin.
+ * The user's global shell and lark-cli configuration are left untouched.
+ */
+export function applyProxyEnvironment(
+	baseEnvironment: Record<string, string | undefined>,
+	settings: LarkCliProxySettings
+): Record<string, string | undefined> {
+	const environment = { ...baseEnvironment };
+	const mode = normalizeProxyMode(settings.proxyMode);
+	if (mode === "system") return environment;
+
+	for (const key of [...PROXY_ENVIRONMENT_KEYS, ...LARK_PROXY_PLUGIN_KEYS]) {
+		delete environment[key];
+	}
+	delete environment.LARK_CLI_NO_PROXY;
+	delete environment.LARK_CLI_NO_PROXY_WARN;
+
+	if (mode === "off") {
+		environment.LARK_CLI_NO_PROXY = "1";
+		environment.LARKSUITE_CLI_PROXY_ENABLE = "0";
+		return environment;
+	}
+
+	const proxyUrl = buildProxyUrl(settings.proxyHost, settings.proxyPort);
+	for (const key of PROXY_ENVIRONMENT_KEYS) {
+		environment[key] = proxyUrl;
+	}
+	// Select the standard environment proxy path when lark-cli also has a
+	// proxy-plugin config file. Custom settings in this plugin take precedence.
+	environment.LARKSUITE_CLI_PROXY_ENABLE = "0";
+	environment.LARK_CLI_NO_PROXY_WARN = "1";
+	return environment;
+}
+
+export function detectProxyEnvironment(
+	environment: Record<string, string | undefined>
+): LarkCliProxyEnvironment | null {
+	for (const key of SYSTEM_PROXY_ENVIRONMENT_KEYS) {
+		const value = environment[key]?.trim();
+		if (value) return { key, value: redactProxyValue(value) };
+	}
+	return null;
+}
+
+function redactProxyValue(value: string): string {
+	try {
+		const url = new URL(/^[a-z][a-z\d+.-]*:\/\//i.test(value) ? value : `http://${value}`);
+		url.username = "";
+		url.password = "";
+		url.pathname = "";
+		url.search = "";
+		url.hash = "";
+		return url.toString().replace(/\/$/, "");
+	} catch {
+		return "***";
+	}
 }
 
 export function getDefaultPathEntries(

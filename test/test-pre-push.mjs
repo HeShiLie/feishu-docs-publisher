@@ -84,6 +84,7 @@ async function run() {
 		await testUnsupportedLarkCliVersionFailsEarly(workspace);
 		await testLarkCliVersionFallsBackToVersionFlag(workspace);
 		await testLarkCliVersionCheckPersistsAndSkips(workspace);
+		await testPrePushUsesConfiguredProxy(workspace);
 		await testMacSystemNotificationOnFailure(workspace);
 		await testWindowsSystemNotificationOnFailure(workspace);
 		await testImageOnlyChangeSyncsReferencingDocument(workspace);
@@ -105,6 +106,24 @@ async function testPreciseSkip(workspace) {
 	const log = await readLog(workspace);
 	assert.match(log, /docs \+fetch .*--api-version v2/);
 	assert.doesNotMatch(log, /docs \+update/);
+}
+
+async function testPrePushUsesConfiguredProxy(workspace) {
+	await resetWorkspaceFiles(workspace);
+	await writeSettings(workspace, {
+		autoSyncMode: "pre-push",
+		syncStrategy: "precise",
+		language: "en",
+		proxyMode: "custom",
+		proxyHost: "127.0.0.1",
+		proxyPort: 7890
+	});
+	await clearLog(workspace);
+	await runHook(workspace, { env: { LARK_CLI_LOG_PROXY: "1" } });
+	const proxyLog = await readFile(join(workspace, "lark-cli.log.proxy"), "utf8");
+	assert.match(proxyLog, /HTTPS_PROXY=http:\/\/127\.0\.0\.1:7890/);
+	assert.match(proxyLog, /HTTP_PROXY=http:\/\/127\.0\.0\.1:7890/);
+	assert.match(proxyLog, /LARKSUITE_CLI_PROXY_ENABLE=0/);
 }
 
 async function testPreciseRepairsEmptyStateBeforeSkip(workspace) {
@@ -1564,6 +1583,13 @@ async function writeFakeLarkCli(workspace) {
 const fs = require("fs");
 const args = process.argv.slice(2);
 fs.appendFileSync(process.env.LARK_CLI_LOG, args.join(" ") + "\\n");
+if (process.env.LARK_CLI_LOG_PROXY) {
+  fs.appendFileSync(process.env.LARK_CLI_LOG + ".proxy", [
+    "HTTPS_PROXY=" + (process.env.HTTPS_PROXY || ""),
+    "HTTP_PROXY=" + (process.env.HTTP_PROXY || ""),
+    "LARKSUITE_CLI_PROXY_ENABLE=" + (process.env.LARKSUITE_CLI_PROXY_ENABLE || "")
+  ].join("\\n") + "\\n");
+}
 if (args[0] === "-version") {
   if (process.env.LARK_CLI_VERSION_COMMAND_UNSUPPORTED) {
     process.stderr.write('unknown option "-version"');
