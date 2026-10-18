@@ -243,6 +243,18 @@ Git hook 也会复用 PDF 绑定，并按库路径或相对笔记的路径改写
 - 自动同步只处理已绑定笔记，不会发布未绑定文件。
 - 如果远端文档被手动修改过，请先把这些修改合并回本地 Markdown。本地 Markdown 是内容来源。
 
+## 变更记录与发布
+
+完整版本历史见 [CHANGELOG.md](./CHANGELOG.md)。每个 GitHub Release 的正文来自 [`release-notes/`](./release-notes/) 中同版本的文件。
+
+发布新版本时：
+
+1. 在 `CHANGELOG.md` 中加入该版本，并创建 `release-notes/<版本>.md`，文件第一行必须是 `# <版本>`。
+2. 运行 `npm version <版本> --no-git-tag-version`。这会更新 `package.json`、`package-lock.json`、`manifest.json` 和 `versions.json`。
+3. 运行 `npm run check` 和 `npm run release:check`。
+4. 提交并推送改动，然后推送与版本号完全一致、不带 `v` 前缀的标签，例如 `0.3.0`。
+5. `.github/workflows/release.yml` 会核对标签和发布说明，运行测试与生产构建，为三个插件文件生成构建证明，并用对应的发布说明创建草稿 Release。审核后发布该草稿。
+
 ## 开发
 
 ```bash
@@ -252,10 +264,6 @@ npm run build
 ```
 
 `npm test` 会做类型检查并运行测试。`npm run build` 生成 `main.js`，该文件已加入 `.gitignore`。`npm run check` 会依次运行测试和生产构建。
-
-推送与 `manifest.json`、`package.json` 的 `version` 完全一致的标签（例如 `0.2.0`，不要加 `v` 前缀）会运行 `.github/workflows/release.yml`。该工作流核对标签，执行 `npm ci` 和 `npm run check`，为 `main.js`、`manifest.json`、`styles.css` 生成构建证明，并创建包含这三个文件的草稿 Release。
-
-`npm version` 会通过 `scripts/version-bump.mjs` 更新 `manifest.json`，并在 `versions.json` 中加入新版本。
 
 ## 许可
 

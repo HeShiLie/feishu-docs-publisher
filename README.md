@@ -243,6 +243,18 @@ Precise sync state is stored at:
 - Auto sync only handles already bound notes and does not publish unbound files.
 - If a remote document was edited manually, merge those edits back into the local Markdown file first. Local Markdown is the source of truth.
 
+## Changelog and releases
+
+See [CHANGELOG.md](./CHANGELOG.md) for the release history and [`release-notes/`](./release-notes/) for the notes shown on each GitHub release.
+
+To publish a release:
+
+1. Add the version to `CHANGELOG.md` and create `release-notes/<version>.md`. The file must start with `# <version>`.
+2. Run `npm version <version> --no-git-tag-version`. This updates `package.json`, `package-lock.json`, `manifest.json`, and `versions.json`.
+3. Run `npm run check` and `npm run release:check`.
+4. Commit and push the changes, then push a tag with exactly the same version and no `v` prefix, for example `0.3.0`.
+5. `.github/workflows/release.yml` verifies the tag and release notes, runs the tests and production build, attests the three plugin assets, and opens a draft release from the matching notes file. Review and publish the draft.
+
 ## Development
 
 ```bash
@@ -252,10 +264,6 @@ npm run build
 ```
 
 `npm test` typechecks and runs the test suite. `npm run build` writes `main.js`, which is gitignored. `npm run check` runs tests and the production build.
-
-Pushing a tag that exactly matches `manifest.json` and `package.json` `version` (for example `0.2.0`, with no `v` prefix) runs `.github/workflows/release.yml`. That workflow verifies the tag, runs `npm ci` and `npm run check`, attests `main.js`, `manifest.json`, and `styles.css`, and opens a draft GitHub release containing those files.
-
-`npm version` updates `manifest.json` and adds the new version to `versions.json` through `scripts/version-bump.mjs`.
 
 ## License
 
