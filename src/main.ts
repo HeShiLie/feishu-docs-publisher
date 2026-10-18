@@ -1,4 +1,18 @@
-import { addIcon, ButtonComponent, FileSystemAdapter, Menu, Notice, Plugin, PluginSettingTab, Setting, TFile, TFolder } from "obsidian";
+import {
+	addIcon,
+	App,
+	ButtonComponent,
+	FileSystemAdapter,
+	Menu,
+	Notice,
+	Plugin,
+	PluginSettingTab,
+	Setting,
+	SettingDefinitionItem,
+	SettingGroupItem,
+	TFile,
+	TFolder
+} from "obsidian";
 import { ChildProcess, execFile, spawn } from "child_process";
 import { constants } from "fs";
 import { access, chmod, copyFile, mkdir, readFile, rename, stat } from "fs/promises";
@@ -83,7 +97,6 @@ import {
 	LarkCliAuthList,
 	LarkCliAuthStatus,
 	LarkCliBrand,
-	LarkCliDeviceAuthorization,
 	LARK_CLI_NPM_PACKAGE,
 	LarkCliProxyMode,
 	LarkCliUpdateCheck,
@@ -1857,9 +1870,9 @@ export default class LarkCliSyncPlugin extends Plugin {
 		const targetScript = join(hooksDirectory, PRE_PUSH_SCRIPT_NAME);
 		const targetCoreScript = join(hooksDirectory, PRE_PUSH_CORE_SCRIPT_NAME);
 		const targetCommandScript = join(hooksDirectory, LARK_CLI_COMMAND_SCRIPT_NAME);
-		await this.copyOrWriteEmbeddedHelper(sourceScript, targetScript, EMBEDDED_PRE_PUSH_SCRIPT);
-		await this.copyOrWriteEmbeddedHelper(sourceCoreScript, targetCoreScript, EMBEDDED_PRE_PUSH_CORE_SCRIPT);
-		await this.copyOrWriteEmbeddedHelper(sourceCommandScript, targetCommandScript, EMBEDDED_LARK_CLI_COMMAND_SCRIPT);
+		await this.copyOrWriteEmbeddedHelper(sourceScript, targetScript, String(EMBEDDED_PRE_PUSH_SCRIPT));
+		await this.copyOrWriteEmbeddedHelper(sourceCoreScript, targetCoreScript, String(EMBEDDED_PRE_PUSH_CORE_SCRIPT));
+		await this.copyOrWriteEmbeddedHelper(sourceCommandScript, targetCommandScript, String(EMBEDDED_LARK_CLI_COMMAND_SCRIPT));
 		await chmod(targetScript, 0o755);
 	}
 
@@ -5514,7 +5527,7 @@ class LarkCliSyncSettingTab extends PluginSettingTab {
 	private readonly plugin: LarkCliSyncPlugin;
 	private unsubscribeCliManagement: (() => void) | null = null;
 
-	constructor(app: import("obsidian").App, plugin: LarkCliSyncPlugin) {
+	constructor(app: App, plugin: LarkCliSyncPlugin) {
 		super(app, plugin);
 		this.plugin = plugin;
 	}
@@ -5525,153 +5538,247 @@ class LarkCliSyncSettingTab extends PluginSettingTab {
 		super.hide();
 	}
 
-	display(): void {
-		const { containerEl } = this;
-		this.unsubscribeCliManagement?.();
-		this.unsubscribeCliManagement = null;
-		containerEl.empty();
-		this.unsubscribeCliManagement = this.plugin.subscribeLarkCliManagementChanges(() => {
-			if (containerEl.isConnected) this.display();
-		});
-
-		new Setting(containerEl).setName(this.plugin.t("settingsTitle")).setHeading();
-
-		const generalSectionEl = this.createSection(containerEl, "settingsSectionGeneral");
-		new Setting(generalSectionEl)
-			.setName(this.plugin.t("settingLanguageName"))
-			.setDesc(this.plugin.t("settingLanguageDesc"))
-			.addDropdown((dropdown) => {
-				dropdown.addOption("zh-CN", this.plugin.t("languageChinese")).addOption("en", this.plugin.t("languageEnglish"))
-					.setValue(this.plugin.settings.language).onChange(async (value) => {
-						this.plugin.settings.language = value as Language;
-						await this.plugin.saveSettings();
-						this.display();
-					});
-			});
-
-		new Setting(generalSectionEl)
-			.setName(this.plugin.t("settingDefaultTargetName"))
-			.setDesc(this.plugin.t("settingDefaultTargetDesc"))
-			.addText((text) => {
-				text.setPlaceholder("https://xxx.feishu.cn/wiki/...").setValue(this.plugin.settings.targetTokenOrUrl)
-					.onChange(async (value) => {
-						this.plugin.settings.targetTokenOrUrl = value.trim();
-						await this.plugin.saveSettings();
-					});
-				});
-
-		this.renderCliSection(containerEl);
-		this.renderProxySection(containerEl);
-
-		const contentSectionEl = this.createSection(containerEl, "settingsSectionContent");
-		new Setting(contentSectionEl)
-			.setName(this.plugin.t("settingTitleSourceName"))
-			.setDesc(this.plugin.t("settingTitleSourceDesc"))
-			.addDropdown((dropdown) => {
-				dropdown.addOption("first-heading", this.plugin.t("titleSourceFirstHeading"))
-					.addOption("file-name", this.plugin.t("titleSourceFileName"))
-					.setValue(this.plugin.settings.titleSource).onChange(async (value) => {
-						this.plugin.settings.titleSource = value as TitleSource;
-						await this.plugin.saveSettings();
-					});
-				});
-
-		new Setting(contentSectionEl)
-			.setName(this.plugin.t("settingWriteBindingName"))
-			.setDesc(this.plugin.t("settingWriteBindingDesc"))
-			.addToggle((toggle) => {
-				toggle.setValue(this.plugin.settings.updateFrontmatter).onChange(async (value) => {
-					this.plugin.settings.updateFrontmatter = value;
-					await this.plugin.saveSettings();
-				});
-				});
-
-		new Setting(contentSectionEl)
-			.setName(this.plugin.t("settingOpenAfterSyncName"))
-			.setDesc(this.plugin.t("settingOpenAfterSyncDesc"))
-			.addToggle((toggle) => {
-				toggle.setValue(this.plugin.settings.openAfterSync).onChange(async (value) => {
-					this.plugin.settings.openAfterSync = value;
-					await this.plugin.saveSettings();
-				});
-			});
-
-		const syncSectionEl = this.createSection(containerEl, "settingsSectionSync");
-		new Setting(syncSectionEl)
-			.setName(this.plugin.t("settingSyncStrategyName"))
-			.setDesc(this.plugin.t("settingSyncStrategyDesc"))
-			.addDropdown((dropdown) => {
-				dropdown.addOption("auto", this.plugin.t("syncStrategyAuto"))
-					.addOption("precise", this.plugin.t("syncStrategyPrecise"))
-					.addOption("overwrite", this.plugin.t("syncStrategyOverwrite"))
-					.setValue(this.plugin.settings.syncStrategy).onChange(async (value) => {
-						this.plugin.settings.syncStrategy = value as SyncStrategy;
-						await this.plugin.saveSettings();
-					});
-			});
-
-		new Setting(syncSectionEl)
-			.setName(this.plugin.t("settingAutoSyncModeName"))
-			.setDesc(this.plugin.t("settingAutoSyncModeDesc"))
-			.addDropdown((dropdown) => {
-				dropdown.addOption("manual", this.plugin.t("autoSyncModeManual"))
-					.addOption("save", this.plugin.t("autoSyncModeSave"))
-					.addOption("pre-push", this.plugin.t("autoSyncModePrePush"))
-					.setValue(this.plugin.settings.autoSyncMode).onChange(async (value) => {
-						this.plugin.settings.autoSyncMode = value as AutoSyncMode;
-						await this.plugin.saveSettings();
-						this.display();
-					});
-			});
-
-		new Setting(syncSectionEl)
-			.setName(this.plugin.t("settingAutoSyncDelayName"))
-			.setDesc(this.plugin.t("settingAutoSyncDelayDesc"))
-			.addText((text) => {
-				text.setPlaceholder(String(DEFAULT_AUTO_SYNC_DELAY_SECONDS))
-					.setValue(String(this.plugin.settings.autoSyncDelaySeconds)).onChange(async (value) => {
-						const delay = Number.parseInt(value, 10);
-						this.plugin.settings.autoSyncDelaySeconds = Number.isFinite(delay)
-							? Math.max(1, delay)
-							: DEFAULT_SETTINGS.autoSyncDelaySeconds;
-						await this.plugin.saveSettings();
-					});
-			});
-
-		new Setting(syncSectionEl)
-			.setName(this.plugin.t("settingStateCacheName"))
-			.setDesc(this.plugin.t("settingStateCacheDesc"))
-			.addText((text) => {
-				text.setPlaceholder(String(DEFAULT_STATE_CACHE_RETAIN_LIMIT))
-					.setValue(String(this.plugin.settings.stateCacheRetainLimit)).onChange(async (value) => {
-						const retainLimit = Number.parseInt(value, 10);
-						this.plugin.settings.stateCacheRetainLimit = Number.isFinite(retainLimit)
-							? Math.max(1, retainLimit)
-							: DEFAULT_STATE_CACHE_RETAIN_LIMIT;
-						await this.plugin.saveSettings();
-					});
-			});
-
-		const gitHookSectionEl = this.createSection(containerEl, "settingsSectionGitHook");
-		const installPrePushHookSetting = new Setting(gitHookSectionEl)
-			.setName(this.plugin.t("settingInstallPrePushHookName"))
-			.setDesc(this.plugin.t("settingInstallPrePushHookDesc"))
-			.addButton((button) => {
-				button.setButtonText(this.plugin.t("installPrePushHookButton")).onClick(async () => {
-					await this.plugin.installPrePushHook();
-					this.display();
-				});
-			});
-		this.renderPrePushHookStatus(installPrePushHookSetting);
+	override getSettingDefinitions(): SettingDefinitionItem[] {
+		const t = (key: MessageKey): string => this.plugin.t(key);
+		return [
+			{
+				type: "group",
+				heading: t("settingsSectionGeneral"),
+				cls: "feishu-lark-settings-section",
+				items: [
+					{
+						name: t("settingLanguageName"),
+						desc: t("settingLanguageDesc"),
+						control: {
+							type: "dropdown",
+							key: "language",
+							options: {
+								"zh-CN": t("languageChinese"),
+								en: t("languageEnglish")
+							},
+							defaultValue: "zh-CN"
+						}
+					},
+					{
+						name: t("settingDefaultTargetName"),
+						desc: t("settingDefaultTargetDesc"),
+						control: {
+							type: "text",
+							key: "targetTokenOrUrl",
+							placeholder: "https://xxx.feishu.cn/wiki/...",
+							defaultValue: ""
+						}
+					}
+				]
+			},
+			{
+				type: "group",
+				heading: t("settingsSectionCli"),
+				cls: "feishu-lark-settings-section",
+				items: this.getCliSettingDefinitions()
+			},
+			{
+				type: "group",
+				heading: t("settingsSectionNetwork"),
+				cls: "feishu-lark-settings-section",
+				items: this.getProxySettingDefinitions()
+			},
+			{
+				type: "group",
+				heading: t("settingsSectionContent"),
+				cls: "feishu-lark-settings-section",
+				items: [
+					{
+						name: t("settingTitleSourceName"),
+						desc: t("settingTitleSourceDesc"),
+						control: {
+							type: "dropdown",
+							key: "titleSource",
+							options: {
+								"first-heading": t("titleSourceFirstHeading"),
+								"file-name": t("titleSourceFileName")
+							},
+							defaultValue: DEFAULT_SETTINGS.titleSource
+						}
+					},
+					{
+						name: t("settingWriteBindingName"),
+						desc: t("settingWriteBindingDesc"),
+						control: {
+							type: "toggle",
+							key: "updateFrontmatter",
+							defaultValue: DEFAULT_SETTINGS.updateFrontmatter
+						}
+					},
+					{
+						name: t("settingOpenAfterSyncName"),
+						desc: t("settingOpenAfterSyncDesc"),
+						control: {
+							type: "toggle",
+							key: "openAfterSync",
+							defaultValue: DEFAULT_SETTINGS.openAfterSync
+						}
+					}
+				]
+			},
+			{
+				type: "group",
+				heading: t("settingsSectionSync"),
+				cls: "feishu-lark-settings-section",
+				items: [
+					{
+						name: t("settingSyncStrategyName"),
+						desc: t("settingSyncStrategyDesc"),
+						control: {
+							type: "dropdown",
+							key: "syncStrategy",
+							options: {
+								auto: t("syncStrategyAuto"),
+								precise: t("syncStrategyPrecise"),
+								overwrite: t("syncStrategyOverwrite")
+							},
+							defaultValue: DEFAULT_SETTINGS.syncStrategy
+						}
+					},
+					{
+						name: t("settingAutoSyncModeName"),
+						desc: t("settingAutoSyncModeDesc"),
+						control: {
+							type: "dropdown",
+							key: "autoSyncMode",
+							options: {
+								manual: t("autoSyncModeManual"),
+								save: t("autoSyncModeSave"),
+								"pre-push": t("autoSyncModePrePush")
+							},
+							defaultValue: DEFAULT_SETTINGS.autoSyncMode
+						}
+					},
+					{
+						name: t("settingAutoSyncDelayName"),
+						desc: t("settingAutoSyncDelayDesc"),
+						control: {
+							type: "number",
+							key: "autoSyncDelaySeconds",
+							placeholder: String(DEFAULT_AUTO_SYNC_DELAY_SECONDS),
+							min: 1,
+							step: 1,
+							defaultValue: DEFAULT_AUTO_SYNC_DELAY_SECONDS
+						}
+					},
+					{
+						name: t("settingStateCacheName"),
+						desc: t("settingStateCacheDesc"),
+						control: {
+							type: "number",
+							key: "stateCacheRetainLimit",
+							placeholder: String(DEFAULT_STATE_CACHE_RETAIN_LIMIT),
+							min: 1,
+							step: 1,
+							defaultValue: DEFAULT_STATE_CACHE_RETAIN_LIMIT
+						}
+					}
+				]
+			},
+			{
+				type: "group",
+				heading: t("settingsSectionGitHook"),
+				cls: "feishu-lark-settings-section",
+				items: [
+					{
+						name: t("settingInstallPrePushHookName"),
+						desc: t("settingInstallPrePushHookDesc"),
+						render: (setting) => {
+							setting.addButton((button) => {
+								button.setButtonText(t("installPrePushHookButton")).onClick(async () => {
+									await this.plugin.installPrePushHook();
+									this.update();
+								});
+							});
+							this.renderPrePushHookStatus(setting);
+						}
+					}
+				]
+			}
+		];
 	}
 
-	private renderCliSection(containerEl: HTMLElement): void {
-		const sectionEl = this.createSection(containerEl, "settingsSectionCli");
+	override getControlValue(key: string): unknown {
+		return this.plugin.settings[key as keyof LarkCliSyncSettings];
+	}
+
+	override async setControlValue(key: string, value: unknown): Promise<void> {
+		const settings = this.plugin.settings;
+		let refreshSettings = false;
+		switch (key) {
+			case "language":
+				settings.language = value === "en" ? "en" : "zh-CN";
+				refreshSettings = true;
+				break;
+			case "targetTokenOrUrl":
+				settings.targetTokenOrUrl = typeof value === "string" ? value.trim() : "";
+				break;
+			case "titleSource":
+				settings.titleSource = value === "first-heading" ? "first-heading" : "file-name";
+				break;
+			case "updateFrontmatter":
+				settings.updateFrontmatter = value === true;
+				break;
+			case "openAfterSync":
+				settings.openAfterSync = value === true;
+				break;
+			case "syncStrategy":
+				settings.syncStrategy = value === "precise" || value === "overwrite" ? value : "auto";
+				break;
+			case "autoSyncMode":
+				settings.autoSyncMode = value === "manual" || value === "pre-push" ? value : "save";
+				refreshSettings = true;
+				break;
+			case "autoSyncDelaySeconds":
+				settings.autoSyncDelaySeconds = this.normalizePositiveInteger(value, DEFAULT_SETTINGS.autoSyncDelaySeconds);
+				break;
+			case "stateCacheRetainLimit":
+				settings.stateCacheRetainLimit = this.normalizePositiveInteger(value, DEFAULT_STATE_CACHE_RETAIN_LIMIT);
+				break;
+			case "larkCliPath":
+				settings.larkCliPath = (typeof value === "string" ? value.trim() : "") || DEFAULT_SETTINGS.larkCliPath;
+				break;
+			case "larkCliBrand":
+				settings.larkCliBrand = normalizeLarkCliBrand(value);
+				break;
+			case "proxyMode":
+				settings.proxyMode = normalizeProxyMode(value);
+				refreshSettings = true;
+				break;
+			case "proxyHost":
+				settings.proxyHost = normalizeProxyHost(value);
+				break;
+			case "proxyPort":
+				settings.proxyPort = normalizeProxyPort(value);
+				break;
+			default:
+				return;
+		}
+		await this.plugin.saveSettings();
+		if (refreshSettings) this.update();
+	}
+
+	private normalizePositiveInteger(value: unknown, fallback: number): number {
+		const parsed = typeof value === "number" ? value : Number.parseInt(String(value), 10);
+		return Number.isFinite(parsed) ? Math.max(1, Math.trunc(parsed)) : fallback;
+	}
+
+	private getCliSettingDefinitions(): SettingGroupItem[] {
 		let latestStatus: LarkCliManagementStatus | null = null;
 		let installBusy = false;
 		let authBusy = false;
 		let loginBusy = false;
 		let configBusy = false;
+		let disposed = false;
+		let statusEl: HTMLElement | null = null;
+		let accountStatusEl: HTMLElement | null = null;
+		let configStatusEl: HTMLElement | null = null;
+		let configSettingEl: HTMLElement | null = null;
 		let refreshButton: ButtonComponent | null = null;
 		let actionButton: ButtonComponent | null = null;
 		let loginButton: ButtonComponent | null = null;
@@ -5681,176 +5788,45 @@ class LarkCliSyncSettingTab extends PluginSettingTab {
 		let configButton: ButtonComponent | null = null;
 		let configDropdown: import("obsidian").DropdownComponent | null = null;
 
-		const statusEl = new Setting(sectionEl)
-			.setName(this.plugin.t("settingLarkCliStatusName"))
-			.setDesc(this.plugin.t("settingLarkCliStatusDesc"))
-			.addButton((button) => {
-				refreshButton = button;
-				button.setButtonText(this.plugin.t("recheckCliButton")).onClick(() => {
-					void refreshStatus();
-				});
-			})
-			.addButton((button) => {
-				actionButton = button;
-				button.setButtonText(this.plugin.t("installCliButton")).setDisabled(true).onClick(async () => {
-					if (installBusy || !latestStatus) return;
-					if (!latestStatus.npm.available && !latestStatus.installed) {
-						window.open(NODE_DOWNLOAD_URL, "_blank", "noopener,noreferrer");
-						return;
-					}
-					installBusy = true;
-					updateCliButtons();
-					try {
-						await this.plugin.installOrUpgradeLarkCli();
-					} catch (error) {
-						new Notice(this.plugin.t("noticeCliInstallFailed", {
-							message: this.formatOperationError(error)
-						}));
-					} finally {
-						installBusy = false;
-						await refreshStatus();
-					}
-				});
-			}).descEl.createDiv({ cls: "feishu-lark-cli-status is-muted", text: this.plugin.t("cliStatusChecking") });
-
-		new Setting(sectionEl)
-			.setName(this.plugin.t("settingLarkCliPathName"))
-			.setDesc(this.plugin.t("settingLarkCliPathDesc"))
-			.addText((text) => {
-				text.setPlaceholder("lark-cli").setValue(this.plugin.settings.larkCliPath).onChange(async (value) => {
-					this.plugin.settings.larkCliPath = value.trim() || DEFAULT_SETTINGS.larkCliPath;
-					await this.plugin.saveSettings();
-				});
-			});
-
-		const accountStatusEl = new Setting(sectionEl)
-			.setName(this.plugin.t("settingLarkCliAccountName"))
-			.setDesc(this.plugin.t("settingLarkCliAccountDesc"))
-			.addButton((button) => {
-				loginButton = button;
-				button.setButtonText(this.plugin.t("loginCliButton")).setDisabled(true).onClick(async () => {
-					if (authBusy) return;
-					const pending = this.plugin.getPendingLarkCliAuthorization();
-					if (pending?.kind === "login" && pending.verificationUrl) {
-						window.open(pending.verificationUrl, "_blank", "noopener,noreferrer");
-						return;
-					}
-					authBusy = true;
-					loginBusy = true;
-					updateCliButtons();
-					try {
-						await this.plugin.startLarkCliLogin();
-					} catch (error) {
-						new Notice(this.plugin.t("loginCliFailed", { message: this.formatOperationError(error) }));
-					} finally {
-						authBusy = false;
-						loginBusy = false;
-						await refreshStatus();
-					}
-				});
-			})
-			.addButton((button) => {
-				openAuthorizationButton = button;
-				button.setButtonText(this.plugin.t("loginCliOpenButton")).setDisabled(true).onClick(() => {
-					const pending = this.plugin.getPendingLarkCliAuthorization();
-					if (pending?.verificationUrl) {
-						window.open(pending.verificationUrl, "_blank", "noopener,noreferrer");
-					}
-				});
-			})
-			.addButton((button) => {
-				cancelAuthorizationButton = button;
-				button.setButtonText(this.plugin.t("cancelCliOperationButton")).setDisabled(true).onClick(() => {
-					this.plugin.cancelLarkCliAuthorization();
-					void refreshStatus();
-				});
-			})
-			.addButton((button) => {
-				logoutButton = button;
-				button.setButtonText(this.plugin.t("logoutCliButton")).setDisabled(true).onClick(async () => {
-					if (authBusy) return;
-					authBusy = true;
-					updateCliButtons();
-					try {
-						await this.plugin.logoutLarkCli();
-					} catch (error) {
-						new Notice(this.plugin.t("logoutCliFailed", { message: this.formatOperationError(error) }));
-					} finally {
-						authBusy = false;
-						await refreshStatus();
-					}
-				});
-			}).descEl.createDiv({ cls: "feishu-lark-cli-status is-muted", text: this.plugin.t("cliAccountChecking") });
-
-		const configSetting = new Setting(sectionEl)
-			.setName(this.plugin.t("cliAppSetupName"))
-			.setDesc(this.plugin.t("cliAppSetupDesc"))
-			.addDropdown((dropdown) => {
-				configDropdown = dropdown;
-				dropdown.addOption("feishu", this.plugin.t("brandFeishu"))
-					.addOption("lark", this.plugin.t("brandLark"))
-					.setValue(this.plugin.settings.larkCliBrand)
-					.onChange(async (value) => {
-						this.plugin.settings.larkCliBrand = normalizeLarkCliBrand(value);
-						await this.plugin.saveSettings();
-					});
-			})
-			.addButton((button) => {
-				configButton = button;
-				button.setButtonText(this.plugin.t("createCliAppButton")).setDisabled(true).onClick(async () => {
-					if (configBusy) return;
-					configBusy = true;
-					updateCliButtons();
-					try {
-						await this.plugin.startLarkCliAppConfiguration(this.plugin.settings.larkCliBrand);
-					} catch (error) {
-						new Notice(this.plugin.t("cliAppSetupFailed", { message: this.formatOperationError(error) }));
-					} finally {
-						configBusy = false;
-						await refreshStatus();
-					}
-				});
-			});
-		configSetting.settingEl.style.display = "none";
-		const configStatusEl = configSetting.descEl.createDiv({ cls: "feishu-lark-cli-status is-muted" });
-
 		const renderStatus = (): void => {
-			if (!latestStatus) return;
+			if (disposed || !latestStatus || !statusEl) return;
+			const status = latestStatus;
 			const lines: string[] = [];
-			if (!latestStatus.installed) {
+			if (!status.installed) {
 				lines.push(this.plugin.t("cliStatusMissing"));
-			} else if (latestStatus.version) {
-				lines.push(this.plugin.t("cliStatusInstalled", { version: latestStatus.version }));
-				if (!latestStatus.supported) {
+			} else if (status.version) {
+				lines.push(this.plugin.t("cliStatusInstalled", { version: status.version }));
+				if (!status.supported) {
 					lines.push(this.plugin.t("cliStatusUnsupported", {
-						version: latestStatus.version,
+						version: status.version,
 						minimum: MIN_EXCLUSIVE_LARK_CLI_VERSION
 					}));
 				}
 			} else {
 				lines.push(this.plugin.t("cliStatusVersionUnknown"));
 			}
-			lines.push(latestStatus.npm.available
-				? this.plugin.t("cliStatusNpmReady", { version: latestStatus.npm.version || "npm" })
+			lines.push(status.npm.available
+				? this.plugin.t("cliStatusNpmReady", { version: status.npm.version || "npm" })
 				: this.plugin.t("cliStatusNpmMissing"));
-			if (latestStatus.installed) {
-				if (latestStatus.latestVersion && latestStatus.updateAvailable) {
-					lines.push(this.plugin.t("cliStatusUpdateAvailable", { version: latestStatus.latestVersion }));
-				} else if (latestStatus.latestVersion) {
+			if (status.installed) {
+				if (status.latestVersion && status.updateAvailable) {
+					lines.push(this.plugin.t("cliStatusUpdateAvailable", { version: status.latestVersion }));
+				} else if (status.latestVersion) {
 					lines.push(this.plugin.t("cliStatusUpToDate"));
-				} else if (latestStatus.updateError) {
+				} else if (status.updateError) {
 					lines.push(this.plugin.t("cliStatusUpdateUnknown"));
 				}
 			}
 			statusEl.setText(lines.join("\n"));
 			statusEl.removeClass("is-success", "is-warning", "is-error", "is-muted");
-			if (!latestStatus.installed) statusEl.addClass("is-warning");
-			else if (!latestStatus.supported) statusEl.addClass("is-error");
-			else if (!latestStatus.npm.available || latestStatus.updateAvailable) statusEl.addClass("is-warning");
+			if (!status.installed) statusEl.addClass("is-warning");
+			else if (!status.supported) statusEl.addClass("is-error");
+			else if (!status.npm.available || status.updateAvailable) statusEl.addClass("is-warning");
 			else statusEl.addClass("is-success");
 		};
 
 		const updateCliButtons = (): void => {
+			if (disposed) return;
 			const pending = this.plugin.getPendingLarkCliAuthorization();
 			const configured = latestStatus?.auth.configured === true;
 			const authError = Boolean(latestStatus?.authError);
@@ -5859,7 +5835,7 @@ class LarkCliSyncSettingTab extends PluginSettingTab {
 
 			if (latestStatus) {
 				const status = latestStatus;
-				accountStatusEl.setText(pending?.kind === "app-configuration"
+				accountStatusEl?.setText(pending?.kind === "app-configuration"
 					? this.plugin.t("cliAppSetupWaiting")
 					: pending?.kind === "login"
 						? this.plugin.t("loginCliWaiting")
@@ -5877,12 +5853,12 @@ class LarkCliSyncSettingTab extends PluginSettingTab {
 												: this.plugin.t("brandFeishu")
 										})
 										: this.plugin.t("cliAccountLoggedOut"));
-				accountStatusEl.removeClass("is-success", "is-warning", "is-error", "is-muted");
-				if (!status.installed) accountStatusEl.addClass("is-error");
-				else if (pending) accountStatusEl.addClass("is-warning");
-				else if (status.authError) accountStatusEl.addClass("is-error");
-				else if (!configured || !hasAccount) accountStatusEl.addClass("is-warning");
-				else accountStatusEl.addClass("is-success");
+				accountStatusEl?.removeClass("is-success", "is-warning", "is-error", "is-muted");
+				if (!status.installed) accountStatusEl?.addClass("is-error");
+				else if (pending) accountStatusEl?.addClass("is-warning");
+				else if (status.authError) accountStatusEl?.addClass("is-error");
+				else if (!configured || !hasAccount) accountStatusEl?.addClass("is-warning");
+				else accountStatusEl?.addClass("is-success");
 
 				if (actionButton) {
 					actionButton.setDisabled(installBusy || Boolean(pending) || authBusy || configBusy);
@@ -5909,136 +5885,309 @@ class LarkCliSyncSettingTab extends PluginSettingTab {
 			}
 			if (openAuthorizationButton) {
 				openAuthorizationButton.setDisabled(!pending?.verificationUrl);
-				openAuthorizationButton.buttonEl.style.display = pending?.verificationUrl ? "" : "none";
+				openAuthorizationButton.buttonEl.toggleClass("feishu-lark-settings-hidden", !pending?.verificationUrl);
 			}
 			if (cancelAuthorizationButton) {
 				cancelAuthorizationButton.setDisabled(!pending);
-				cancelAuthorizationButton.buttonEl.style.display = pending ? "" : "none";
+				cancelAuthorizationButton.buttonEl.toggleClass("feishu-lark-settings-hidden", !pending);
 			}
 			if (logoutButton) {
-				logoutButton.setDisabled(installBusy || authBusy || !configured
-					|| !hasAccount);
+				logoutButton.setDisabled(installBusy || authBusy || !configured || !hasAccount);
 			}
 
 			const showConfig = Boolean(latestStatus?.installed && !authError && !configured);
-			configSetting.settingEl.style.display = showConfig ? "" : "none";
+			configSettingEl?.toggleClass("feishu-lark-settings-hidden", !showConfig);
 			if (showConfig) {
 				const setupRunning = pending?.kind === "app-configuration" || configBusy || installBusy;
-				if (configDropdown) configDropdown.setDisabled(setupRunning);
+				configDropdown?.setDisabled(setupRunning);
 				if (configButton) {
 					configButton.setDisabled(setupRunning);
 					configButton.setButtonText(setupRunning
 						? this.plugin.t("cliAppSetupStarting")
 						: this.plugin.t("createCliAppButton"));
 				}
-				configStatusEl.setText(setupRunning ? this.plugin.t("cliAppSetupWaiting") : "");
+				configStatusEl?.setText(setupRunning ? this.plugin.t("cliAppSetupWaiting") : "");
 			}
 		};
 
 		const refreshStatus = async (): Promise<void> => {
-			statusEl.setText(this.plugin.t("cliStatusChecking"));
-			accountStatusEl.setText(this.plugin.t("cliAccountChecking"));
-			if (refreshButton) refreshButton.setDisabled(true);
-			if (actionButton) actionButton.setDisabled(true);
+			if (disposed) return;
+			statusEl?.setText(this.plugin.t("cliStatusChecking"));
+			accountStatusEl?.setText(this.plugin.t("cliAccountChecking"));
+			refreshButton?.setDisabled(true);
+			actionButton?.setDisabled(true);
 			try {
 				const status = await this.plugin.getLarkCliManagementStatus();
-				if (!statusEl.isConnected) return;
+				if (disposed || !statusEl?.isConnected) return;
 				latestStatus = status;
 				renderStatus();
 				updateCliButtons();
 			} catch (error) {
-				if (!statusEl.isConnected) return;
+				if (disposed || !statusEl?.isConnected) return;
 				statusEl.setText(this.plugin.t("cliStatusUpdateUnknown"));
 				statusEl.removeClass("is-success", "is-warning", "is-error", "is-muted");
 				statusEl.addClass("is-error");
-				accountStatusEl.setText(this.plugin.t("cliAccountError", {
+				accountStatusEl?.setText(this.plugin.t("cliAccountError", {
 					message: this.formatOperationError(error)
 				}));
 			} finally {
-				if (refreshButton) refreshButton.setDisabled(false);
+				refreshButton?.setDisabled(false);
 			}
 		};
 
-		updateCliButtons();
-		void refreshStatus();
+		return [
+			{
+				name: this.plugin.t("settingLarkCliStatusName"),
+				desc: this.plugin.t("settingLarkCliStatusDesc"),
+				render: (setting) => {
+					statusEl = setting.descEl.createDiv({
+						cls: "feishu-lark-cli-status is-muted",
+						text: this.plugin.t("cliStatusChecking")
+					});
+					setting.addButton((button) => {
+						refreshButton = button;
+						button.setButtonText(this.plugin.t("recheckCliButton")).onClick(() => {
+							void refreshStatus();
+						});
+					});
+					setting.addButton((button) => {
+						actionButton = button;
+						button.setButtonText(this.plugin.t("installCliButton")).setDisabled(true).onClick(async () => {
+							if (installBusy || !latestStatus) return;
+							if (!latestStatus.npm.available && !latestStatus.installed) {
+								window.open(NODE_DOWNLOAD_URL, "_blank", "noopener,noreferrer");
+								return;
+							}
+							installBusy = true;
+							updateCliButtons();
+							try {
+								await this.plugin.installOrUpgradeLarkCli();
+							} catch (error) {
+								new Notice(this.plugin.t("noticeCliInstallFailed", {
+									message: this.formatOperationError(error)
+								}));
+							} finally {
+								installBusy = false;
+								await refreshStatus();
+							}
+						});
+					});
+					this.unsubscribeCliManagement?.();
+					const unsubscribe = this.plugin.subscribeLarkCliManagementChanges(() => {
+						if (statusEl?.isConnected) void refreshStatus();
+					});
+					this.unsubscribeCliManagement = unsubscribe;
+					void refreshStatus();
+					return () => {
+						disposed = true;
+						if (this.unsubscribeCliManagement === unsubscribe) {
+							this.unsubscribeCliManagement = null;
+						}
+						unsubscribe();
+					};
+				}
+			},
+			{
+				name: this.plugin.t("settingLarkCliPathName"),
+				desc: this.plugin.t("settingLarkCliPathDesc"),
+				control: {
+					type: "text",
+					key: "larkCliPath",
+					placeholder: "lark-cli",
+					defaultValue: DEFAULT_SETTINGS.larkCliPath
+				}
+			},
+			{
+				name: this.plugin.t("settingLarkCliAccountName"),
+				desc: this.plugin.t("settingLarkCliAccountDesc"),
+				render: (setting) => {
+					accountStatusEl = setting.descEl.createDiv({
+						cls: "feishu-lark-cli-status is-muted",
+						text: this.plugin.t("cliAccountChecking")
+					});
+					setting.addButton((button) => {
+						loginButton = button;
+						button.setButtonText(this.plugin.t("loginCliButton")).setDisabled(true).onClick(async () => {
+							if (authBusy) return;
+							const pending = this.plugin.getPendingLarkCliAuthorization();
+							if (pending?.kind === "login" && pending.verificationUrl) {
+								window.open(pending.verificationUrl, "_blank", "noopener,noreferrer");
+								return;
+							}
+							authBusy = true;
+							loginBusy = true;
+							updateCliButtons();
+							try {
+								await this.plugin.startLarkCliLogin();
+							} catch (error) {
+								new Notice(this.plugin.t("loginCliFailed", { message: this.formatOperationError(error) }));
+							} finally {
+								authBusy = false;
+								loginBusy = false;
+								await refreshStatus();
+							}
+						});
+					});
+					setting.addButton((button) => {
+						openAuthorizationButton = button;
+						button.setButtonText(this.plugin.t("loginCliOpenButton")).setDisabled(true).onClick(() => {
+							const pending = this.plugin.getPendingLarkCliAuthorization();
+							if (pending?.verificationUrl) {
+								window.open(pending.verificationUrl, "_blank", "noopener,noreferrer");
+							}
+						});
+					});
+					setting.addButton((button) => {
+						cancelAuthorizationButton = button;
+						button.setButtonText(this.plugin.t("cancelCliOperationButton")).setDisabled(true).onClick(() => {
+							this.plugin.cancelLarkCliAuthorization();
+							void refreshStatus();
+						});
+					});
+					setting.addButton((button) => {
+						logoutButton = button;
+						button.setButtonText(this.plugin.t("logoutCliButton")).setDisabled(true).onClick(async () => {
+							if (authBusy) return;
+							authBusy = true;
+							updateCliButtons();
+							try {
+								await this.plugin.logoutLarkCli();
+							} catch (error) {
+								new Notice(this.plugin.t("logoutCliFailed", { message: this.formatOperationError(error) }));
+							} finally {
+								authBusy = false;
+								await refreshStatus();
+							}
+						});
+					});
+					updateCliButtons();
+				}
+			},
+			{
+				name: this.plugin.t("cliAppSetupName"),
+				desc: this.plugin.t("cliAppSetupDesc"),
+				render: (setting) => {
+					configSettingEl = setting.settingEl;
+					setting.addDropdown((dropdown) => {
+						configDropdown = dropdown;
+						dropdown.addOption("feishu", this.plugin.t("brandFeishu"))
+							.addOption("lark", this.plugin.t("brandLark"))
+							.setValue(this.plugin.settings.larkCliBrand)
+							.onChange(async (value) => {
+								this.plugin.settings.larkCliBrand = normalizeLarkCliBrand(value);
+								await this.plugin.saveSettings();
+							});
+					});
+					setting.addButton((button) => {
+						configButton = button;
+						button.setButtonText(this.plugin.t("createCliAppButton")).setDisabled(true).onClick(async () => {
+							if (configBusy) return;
+							configBusy = true;
+							updateCliButtons();
+							try {
+								await this.plugin.startLarkCliAppConfiguration(this.plugin.settings.larkCliBrand);
+							} catch (error) {
+								new Notice(this.plugin.t("cliAppSetupFailed", { message: this.formatOperationError(error) }));
+							} finally {
+								configBusy = false;
+								await refreshStatus();
+							}
+						});
+					});
+					configStatusEl = setting.descEl.createDiv({ cls: "feishu-lark-cli-status is-muted" });
+					updateCliButtons();
+				}
+			}
+		];
 	}
 
-	private renderProxySection(containerEl: HTMLElement): void {
-		const sectionEl = this.createSection(containerEl, "settingsSectionNetwork");
-		const modeSetting = new Setting(sectionEl)
-			.setName(this.plugin.t("settingProxyModeName"))
-			.setDesc(this.plugin.t("settingProxyModeDesc"))
-			.addDropdown((dropdown) => {
-				dropdown.addOption("system", this.plugin.t("proxyModeSystem"))
-					.addOption("custom", this.plugin.t("proxyModeCustom"))
-					.addOption("off", this.plugin.t("proxyModeOff"))
-					.setValue(this.plugin.settings.proxyMode)
-					.onChange(async (value) => {
-						this.plugin.settings.proxyMode = normalizeProxyMode(value);
-						await this.plugin.saveSettings();
-						updateProxySettings();
-					});
-			});
-		const systemProxyEl = modeSetting.descEl.createDiv({ cls: "feishu-lark-proxy-detail" });
+	private getProxySettingDefinitions(): SettingGroupItem[] {
+		let hostSetting: Setting | null = null;
+		let portSetting: Setting | null = null;
+		let systemProxyEl: HTMLElement | null = null;
+		let proxyDetailEl: HTMLElement | null = null;
 
-		const hostSetting = new Setting(sectionEl)
-			.setName(this.plugin.t("proxyHostName"))
-			.setDesc(this.plugin.t("proxyHostDesc"))
-			.addText((text) => {
-				text.setPlaceholder(DEFAULT_PROXY_HOST)
-					.setValue(this.plugin.settings.proxyHost)
-					.onChange(async (value) => {
-						this.plugin.settings.proxyHost = normalizeProxyHost(value);
-						await this.plugin.saveSettings();
-						updateProxySettings();
-					});
-			});
-
-		const portSetting = new Setting(sectionEl)
-			.setName(this.plugin.t("proxyPortName"))
-			.setDesc(this.plugin.t("proxyPortDesc"))
-			.addText((text) => {
-				text.setPlaceholder(String(DEFAULT_PROXY_PORT))
-					.setValue(String(this.plugin.settings.proxyPort))
-					.onChange(async (value) => {
-						this.plugin.settings.proxyPort = normalizeProxyPort(value);
-						await this.plugin.saveSettings();
-						updateProxySettings();
-					});
-			});
-
-		const proxyDetailEl = portSetting.descEl.createDiv({ cls: "feishu-lark-proxy-detail" });
 		const updateProxySettings = (): void => {
 			const mode = normalizeProxyMode(this.plugin.settings.proxyMode);
 			const custom = mode === "custom";
-			hostSetting.settingEl.style.display = custom ? "" : "none";
-			portSetting.settingEl.style.display = custom ? "" : "none";
+			hostSetting?.settingEl.toggleClass("feishu-lark-settings-hidden", !custom);
+			portSetting?.settingEl.toggleClass("feishu-lark-settings-hidden", !custom);
 			if (mode === "system") {
 				const detected = detectProxyEnvironment(process.env);
-				systemProxyEl.setText(detected
+				systemProxyEl?.setText(detected
 					? this.plugin.t("proxySystemDetected", { key: detected.key, value: detected.value })
 					: this.plugin.t("proxySystemNotDetected"));
 			} else {
-				systemProxyEl.setText("");
+				systemProxyEl?.setText("");
 			}
-			proxyDetailEl.setText(custom
+			proxyDetailEl?.setText(custom
 				? this.plugin.t("proxyCustomStatus", {
 					url: buildProxyUrl(this.plugin.settings.proxyHost, this.plugin.settings.proxyPort)
 				})
 				: "");
 		};
-		updateProxySettings();
+
+		return [
+			{
+				name: this.plugin.t("settingProxyModeName"),
+				desc: this.plugin.t("settingProxyModeDesc"),
+				render: (setting) => {
+					setting.addDropdown((dropdown) => {
+						dropdown.addOption("system", this.plugin.t("proxyModeSystem"))
+							.addOption("custom", this.plugin.t("proxyModeCustom"))
+							.addOption("off", this.plugin.t("proxyModeOff"))
+							.setValue(this.plugin.settings.proxyMode)
+							.onChange(async (value) => {
+								this.plugin.settings.proxyMode = normalizeProxyMode(value);
+								await this.plugin.saveSettings();
+								updateProxySettings();
+							});
+					});
+					systemProxyEl = setting.descEl.createDiv({ cls: "feishu-lark-proxy-detail" });
+					updateProxySettings();
+				}
+			},
+			{
+				name: this.plugin.t("proxyHostName"),
+				desc: this.plugin.t("proxyHostDesc"),
+				render: (setting) => {
+					hostSetting = setting;
+					setting.addText((text) => {
+						text.setPlaceholder(DEFAULT_PROXY_HOST)
+							.setValue(this.plugin.settings.proxyHost)
+							.onChange(async (value) => {
+								this.plugin.settings.proxyHost = normalizeProxyHost(value);
+								await this.plugin.saveSettings();
+								updateProxySettings();
+							});
+					});
+					updateProxySettings();
+				}
+			},
+			{
+				name: this.plugin.t("proxyPortName"),
+				desc: this.plugin.t("proxyPortDesc"),
+				render: (setting) => {
+					portSetting = setting;
+					setting.addText((text) => {
+						text.setPlaceholder(String(DEFAULT_PROXY_PORT))
+							.setValue(String(this.plugin.settings.proxyPort))
+							.onChange(async (value) => {
+								this.plugin.settings.proxyPort = normalizeProxyPort(value);
+								await this.plugin.saveSettings();
+								updateProxySettings();
+							});
+					});
+					proxyDetailEl = setting.descEl.createDiv({ cls: "feishu-lark-proxy-detail" });
+					updateProxySettings();
+				}
+			}
+		];
 	}
 
 	private formatOperationError(error: unknown): string {
 		const message = error instanceof Error ? error.message : String(error);
 		return (message.split("\n").find((line) => line.trim()) || message).trim().slice(0, MAX_NOTICE_ERROR_DETAIL_LENGTH);
-	}
-
-	private createSection(containerEl: HTMLElement, titleKey: MessageKey): HTMLElement {
-		const sectionEl = containerEl.createDiv({ cls: "feishu-lark-settings-section" });
-		new Setting(sectionEl).setName(this.plugin.t(titleKey)).setHeading();
-		return sectionEl;
 	}
 
 	private renderPrePushHookStatus(setting: Setting): void {
@@ -6047,9 +6196,16 @@ class LarkCliSyncSettingTab extends PluginSettingTab {
 			text: this.plugin.t("prePushHookStatusChecking")
 		});
 		void this.plugin.getPrePushHookStatus().then((status) => {
+			if (!statusEl.isConnected) return;
 			statusEl.setText(this.getPrePushHookStatusText(status));
 			statusEl.removeClass("is-installed", "is-error", "is-warning", "is-muted");
 			statusEl.addClass(this.getPrePushHookStatusClass(status));
+		}).catch((error: unknown) => {
+			if (!statusEl.isConnected) return;
+			statusEl.setText(this.plugin.t("prePushHookStatusUnavailable"));
+			statusEl.removeClass("is-installed", "is-error", "is-warning", "is-muted");
+			statusEl.addClass("is-muted");
+			console.warn("[Feishu Docs Publisher] failed to check pre-push hook status", error);
 		});
 	}
 

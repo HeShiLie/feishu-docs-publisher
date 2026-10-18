@@ -2,7 +2,7 @@
 	margin-top: 28px;
 }
 
-.feishu-lark-settings-section > .setting-item {
+.feishu-lark-settings-section .setting-item {
 	margin: 8px 0;
 	padding: 16px;
 	border: 0;
@@ -10,7 +10,7 @@
 	background: var(--background-secondary);
 }
 
-.feishu-lark-settings-section > .setting-item + .setting-item {
+.feishu-lark-settings-section .setting-item + .setting-item {
 	border-top: 0;
 }
 
@@ -59,9 +59,14 @@
 	line-height: 1.4;
 }
 
-.feishu-lark-settings-section > .setting-item .setting-item-control {
+.feishu-lark-settings-section .setting-item .setting-item-control {
 	flex-wrap: wrap;
 	gap: var(--size-4-2);
+}
+
+.setting-item.feishu-lark-settings-hidden,
+button.feishu-lark-settings-hidden {
+	display: none;
 }
 
 .feishu-lark-published-modal {

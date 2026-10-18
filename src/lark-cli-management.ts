@@ -1,17 +1,3 @@
-import {
-	applyProxyEnvironment,
-	buildProxyUrl,
-	DEFAULT_PROXY_HOST,
-	DEFAULT_PROXY_PORT,
-	detectProxyEnvironment,
-	LarkCliProxyEnvironment,
-	LarkCliProxyMode,
-	LarkCliProxySettings,
-	normalizeProxyHost,
-	normalizeProxyMode,
-	normalizeProxyPort
-} from "./lark-cli-command";
-
 export {
 	applyProxyEnvironment,
 	buildProxyUrl,

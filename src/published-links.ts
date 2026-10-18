@@ -328,7 +328,7 @@ export class PublishedLinksModal extends Modal {
 		const renderRevision = this.renderRevision;
 		this.pending.add(entry.id);
 		showFeedback(this.feedbackEl, messages(this.host).working);
-		controls.forEach(({ button }) => button.setDisabled(true));
+		controls.forEach(({ button }) => { button.setDisabled(true); });
 		try {
 			await action();
 			if (this.active && this.feedbackEl.textContent === messages(this.host).working) showFeedback(this.feedbackEl, "");
@@ -338,7 +338,7 @@ export class PublishedLinksModal extends Modal {
 			this.pending.delete(entry.id);
 			if (this.active) {
 				if (renderRevision !== this.renderRevision) this.renderList();
-				else controls.forEach(({ button, disabled }) => button.setDisabled(disabled));
+				else controls.forEach(({ button, disabled }) => { button.setDisabled(disabled); });
 			}
 		}
 	}
@@ -364,7 +364,7 @@ abstract class PublishedLinkActionModal extends Modal {
 			this.buttons.push(button.setButtonText(t.cancel).onClick(() => this.close()));
 		}).addButton((button) => {
 			this.buttons.push(button.setButtonText(label));
-			if (warning) button.setWarning();
+			if (warning) button.setDestructive();
 			else button.setCta();
 			button.onClick(() => { void this.submit(button, label, busyLabel, action); });
 		});
@@ -373,7 +373,7 @@ abstract class PublishedLinkActionModal extends Modal {
 	private async submit(button: ButtonComponent, label: string, busyLabel: string, action: () => MaybePromise<void>): Promise<void> {
 		if (this.busy) return;
 		this.busy = true;
-		this.buttons.forEach((control) => control.setDisabled(true));
+		this.buttons.forEach((control) => { control.setDisabled(true); });
 		button.setButtonText(busyLabel);
 		showFeedback(this.feedbackEl, "");
 		try {
@@ -388,7 +388,7 @@ abstract class PublishedLinkActionModal extends Modal {
 		} finally {
 			this.busy = false;
 			if (this.active) {
-				this.buttons.forEach((control) => control.setDisabled(false));
+				this.buttons.forEach((control) => { control.setDisabled(false); });
 				button.setButtonText(label);
 			}
 		}
@@ -419,7 +419,7 @@ export class PublishedLinkBindingModal extends PublishedLinkActionModal {
 		let input: TextComponent | undefined;
 		const urlSetting = new Setting(this.contentEl).setName(t.url).setDesc(t.urlHint).addText((text) => {
 			this.input = input = text;
-			text.setValue(url).setPlaceholder("https://…").onChange((value) => {
+			text.setValue(url).setPlaceholder("HTTPS://…").onChange((value) => {
 				url = value;
 				text.inputEl.setAttribute("aria-invalid", "false");
 			});

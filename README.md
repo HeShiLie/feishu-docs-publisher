@@ -46,6 +46,8 @@ Skip a file that does not exist. An existing file in the new folder is not overw
 
 ## Installation
 
+Requires Obsidian 1.13.0 or later on desktop.
+
 ### Option 1: Community plugins
 
 After this plugin is listed in the community plugin browser:

@@ -188,7 +188,7 @@ async function publishLocked(options: PdfPublishOptions, key: string, host: PdfP
 			await file.close();
 		}
 		const hash = createHash("sha256");
-		for await (const chunk of createReadStream(snapshot)) {
+		for await (const chunk of createReadStream(snapshot) as AsyncIterable<Buffer>) {
 			hash.update(chunk);
 		}
 		const contentHash = hash.digest("hex");
@@ -226,14 +226,14 @@ async function publishLocked(options: PdfPublishOptions, key: string, host: PdfP
 					"PDF upload failed or its result is uncertain. The pending binding was retained; reconcile it before retrying.", binding, error);
 			}
 			if (previousToken && data.file_token !== previousToken) {
-				binding = { ...binding, unexpectedFileToken: data.file_token as string };
+				binding = { ...binding, unexpectedFileToken: data.file_token };
 				await saveBinding(host, binding);
 				throw new PdfPublishError("replacement-unsupported",
 					"The server did not preserve the bound PDF token during replacement. The original binding was retained; reconcile the unexpected token before retrying.", binding);
 			}
 			binding = {
 				...binding, status: options.parent.kind === "wiki" ? "uploaded" : "published",
-				fileToken: data.file_token as string, url: readUrl(data.url) || binding.url,
+				fileToken: data.file_token, url: readUrl(data.url) || binding.url,
 				remoteVersion: readVersion(data.version) || binding.remoteVersion, updatedAt: new Date().toISOString()
 			};
 			// Persist the file token BEFORE attempting wiki resolution so lookup failures
@@ -265,7 +265,7 @@ async function verifyWikiBinding(binding: PdfBinding, host: PdfPublishHost): Pro
 		throw new PdfPublishError("wiki-file-unverified",
 			"The saved PDF's native wiki file node could not be verified. Its token was retained; the next retry verifies that token before writing.", binding, error);
 	}
-	const verified: PdfBinding = { ...binding, status: "published", nodeToken: node.node_token as string,
+	const verified: PdfBinding = { ...binding, status: "published", nodeToken: node.node_token,
 		url: readUrl(node.url) || binding.url, updatedAt: new Date().toISOString() };
 	await saveBinding(host, verified);
 	return verified;

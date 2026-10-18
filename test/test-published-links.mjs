@@ -25,7 +25,7 @@ export class ButtonComponent {
   setDisabled(value) { this.buttonEl.disabled = value; return this; }
   setIcon(value) { this.icon = value; return this; }
   setTooltip(value) { this.tooltip = value; return this; }
-  setWarning() { this.warning = true; return this; }
+  setDestructive() { this.warning = true; return this; }
   setCta() { return this; }
   onClick(callback) { this.callback = callback; return this; }
   // Native buttons support Enter/Space without custom keyboard listeners.

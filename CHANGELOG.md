@@ -4,6 +4,16 @@
 
 本文件按 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 的结构维护，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [0.3.1] - 2026-10-18
+
+### 变更
+
+- 设置页迁移到 Obsidian 1.13 的声明式设置 API，所有设置项现在可被设置搜索找到；最低 Obsidian 版本同步提升到 1.13.0。
+
+### 修复
+
+- 修复 Obsidian 插件审查发现的直接样式赋值、不必要类型断言、异步回调签名、未使用代码和废弃按钮 API。
+
 ## [0.3.0] - 2026-10-18
 
 ### 新增
@@ -42,6 +52,7 @@
 - 处理旧版 Wiki 文档的 owner 解析、标题附近的导入图片、飞书引用块和 URL 往返格式。
 - 完善目录发布、PDF 引用和 pre-push 同步中的去重与绑定恢复。
 
+[0.3.1]: https://github.com/totok22/feishu-docs-publisher/compare/0.3.0...0.3.1
 [0.3.0]: https://github.com/totok22/feishu-docs-publisher/compare/0.2.1...0.3.0
 [0.2.1]: https://github.com/totok22/feishu-docs-publisher/compare/0.2.0...0.2.1
 [0.2.0]: https://github.com/totok22/feishu-docs-publisher/compare/0.1.26...0.2.0

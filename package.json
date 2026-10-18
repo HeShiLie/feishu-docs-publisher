@@ -1,6 +1,6 @@
 {
 	"name": "feishu-docs-publisher",
-	"version": "0.3.0",
+	"version": "0.3.1",
 	"description": "Publish and sync Markdown notes, folders, and PDFs to Feishu/Lark Docs through the local lark-cli.",
 	"main": "main.js",
 	"type": "module",
@@ -23,7 +23,7 @@
 	"devDependencies": {
 		"@types/node": "^20.19.0",
 		"esbuild": "^0.25.5",
-		"obsidian": "^1.8.7",
+		"obsidian": "^1.13.0",
 		"tslib": "^2.8.1",
 		"typescript": "^5.8.3"
 	}

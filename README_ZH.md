@@ -46,6 +46,8 @@ cp "/path/to/your/vault/.obsidian/plugins/feishu-lark-cli-sync/lark-sync-state.j
 
 ## 安装方法
 
+需要 Obsidian 1.13.0 或更高版本的桌面端。
+
 ### 方式一：社区插件
 
 审核上架后：

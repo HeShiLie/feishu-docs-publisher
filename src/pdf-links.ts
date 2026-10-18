@@ -38,7 +38,8 @@ export function rewritePublishedPdfLinks(
 	let rewritten = "";
 	for (const match of content.matchAll(protectedPattern)) {
 		rewritten += rewriteText(content.slice(offset, match.index), targets, currentFile, resolvePath) + match[0];
-		offset = match.index! + match[0].length;
+		if (match.index === undefined) continue;
+		offset = match.index + match[0].length;
 	}
 	return rewritten + rewriteText(content.slice(offset), targets, currentFile, resolvePath);
 }
@@ -61,7 +62,7 @@ function decodeTarget(raw: string): string | null {
 	let target = raw.trim().replace(/^<|>$/g, "");
 	try { target = decodeURIComponent(target.split("#")[0] || ""); }
 	catch { return null; }
-	if (!/\.pdf$/i.test(target) || /^(?:[A-Za-z][A-Za-z0-9+.-]*:|[\/\\])/.test(target)) return null;
+	if (!/\.pdf$/i.test(target) || /^(?:[A-Za-z][A-Za-z0-9+.-]*:|[/\\])/.test(target)) return null;
 	return target.replace(/\\/g, "/");
 }
 
