@@ -35,7 +35,7 @@ export function normalizeObsidianCallouts(source: string, warn?: ExportWarning):
 }
 
 /** Transform prose only, protecting parsed code blocks and inline code/comments. */
-export function transformProse(source: string, transform: (text: string) => string, protectHtml = true): string {
+export function transformProse(source: string, transform: (text: string, offset: number) => string, protectHtml = true): string {
 	const offsets = [0];
 	for (let i = 0; i < source.length; i++) if (source[i] === "\n") offsets.push(i + 1);
 	const ranges: Array<[number, number]> = [];
@@ -51,9 +51,9 @@ export function transformProse(source: string, transform: (text: string) => stri
 	let result = "";
 	for (const [start, end] of ranges) {
 		if (end <= cursor) continue;
-		if (start > cursor) result += transform(source.slice(cursor, start));
+		if (start > cursor) result += transform(source.slice(cursor, start), cursor);
 		result += source.slice(Math.max(cursor, start), end);
 		cursor = end;
 	}
-	return result + transform(source.slice(cursor));
+	return result + transform(source.slice(cursor), cursor);
 }

@@ -4,7 +4,7 @@
 
 A research-note export fork of [totok22/feishu-docs-publisher](https://github.com/totok22/feishu-docs-publisher), based on upstream 0.3.1. Publish notes to Feishu/Lark using the existing local `lark-cli` authentication and PDF publishing workflow.
 
-**0.4.0 is a pre-release.** Native block/API and automated tests pass, but browser visual acceptance of fold/unfold behavior is still pending. See the [compatibility report](docs/native-export-v2.md) before using it with existing documents.
+**0.4.1 is a pre-release.** Native block/API and automated tests pass, but browser visual acceptance of fold/unfold behavior is still pending. See the [compatibility report](docs/native-export-v2.md) before using it with existing documents.
 
 ## Features
 
@@ -20,7 +20,7 @@ A research-note export fork of [totok22/feishu-docs-publisher](https://github.co
 
 Requires desktop Obsidian **1.13.0+** and the upstream-supported `lark-cli` setup.
 
-1. Download **main.js**, **manifest.json**, and **styles.css** from [Release 0.4.0](https://github.com/HeShiLie/feishu-docs-publisher/releases/tag/0.4.0).
+1. Download **main.js**, **manifest.json**, and **styles.css** from [Release 0.4.1](https://github.com/HeShiLie/feishu-docs-publisher/releases/tag/0.4.1).
 2. Disable the existing plugin and back up its program files and data.
 3. Copy the three files into `<vault>/.obsidian/plugins/feishu-docs-publisher/`. Preserve `data.json` and `lark-sync-state.json` if replacing upstream.
 4. Restart Obsidian and enable **Feishu Research Publisher**.
@@ -34,7 +34,7 @@ Use the existing single-note publish/sync command. Publish or bind a PDF before 
 
 Start with a new test document. Changes within a Callout replace its containing top-level subtree; IDs/comment anchors within that changed subtree are not guaranteed to survive. Safe precise mode does not automatically migrate an existing document without native mapping.
 
-PDF crop embeds still become file references. Exact PDF selection navigation is not retained. The native path rejects remote image URLs and changes exceeding 1000 blocks. Local image materialization is integrated but has not been fully verified inside Callouts against the live service. Mermaid, complex tables, footnotes, and HTML compatibility are not claimed complete.
+PDF++ `![[paper.pdf#page=3&rect=x1,y1,x2,y2]]` and page embeds are rendered as images. Obsidian uses bundled PDF.js; Git-hook rendering requires Poppler. Exact text-selection navigation is not retained. The native path rejects remote image URLs and changes exceeding 1000 blocks. Native image placement has live coverage for PDF crops in lists and PNG WikiLinks inside folded parents. Mermaid, complex tables, footnotes, and HTML compatibility are not claimed complete.
 
 See [installation, synchronization behavior, and validation details](docs/native-export-v2.md).
 

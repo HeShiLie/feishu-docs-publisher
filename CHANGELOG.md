@@ -4,6 +4,20 @@
 
 本文件按 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 的结构维护，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [0.4.1] - 2026-10-19
+
+### Fixed
+
+- Render PDF++ page/rect image embeds instead of silently replacing them with file citations.
+- Preserve local WikiLink image placement inside Callouts and lists; protect fenced and inline code examples.
+- Create native image blocks directly at their target positions and persist upload tokens for retry.
+- Add PDF crop dimensions/cache tests and nested native image recovery coverage.
+
+### Notes
+
+- Obsidian uses its bundled PDF.js renderer. Git-hook PDF rendering requires Poppler; rotated PDFs should be published inside Obsidian.
+- Live tests confirmed two PDF crop images in their source section and an ordinary PNG WikiLink inside a folded parent. General visual fold/unfold acceptance remains pending.
+
 ## [0.4.0] - 2026-10-19
 
 ### Added

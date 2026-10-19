@@ -21,6 +21,7 @@ await esbuild.build({
 			build.onLoad({ filter: /.*/, namespace: "obsidian-test-stub" }, () => ({
 				contents: `
 					export const addIcon = () => {};
+					export const loadPdfJs = async () => { throw new Error("PDF.js not stubbed"); };
 					export class App {}
 					export class FileSystemAdapter {}
 					export class Menu {}

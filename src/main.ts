@@ -1,7 +1,9 @@
+import { preparePdfCropImages, scanPdfCropReferences } from "./pdf-crops";
 import { prepareNativeCallouts } from "./native-callout";
 import { NativeState, syncNativeDocument } from "./native-sync";
 import {
 	addIcon,
+	loadPdfJs,
 	App,
 	ButtonComponent,
 	FileSystemAdapter,
@@ -19,7 +21,7 @@ import { ChildProcess, execFile, spawn } from "child_process";
 import { constants } from "fs";
 import { access, chmod, copyFile, mkdir, readFile, rename, stat } from "fs/promises";
 import { mkdtemp, rm, writeFile } from "fs/promises";
-import { dirname, join } from "path";
+import { basename, dirname, join } from "path";
 import { homedir, tmpdir } from "os";
 import process from "process";
 import { promisify } from "util";
@@ -2598,14 +2600,27 @@ exec "${nodePath}" "${scriptPath}" "$@"
 		const warnings: string[] = [];
 		const content = prepareNoteContentForLark(file, contentWithoutBinding, this.settings.titleSource, (warning) => warnings.push(warning), true);
 		this.reportExportWarnings(file, warnings);
-		if (scanLocalImageReferences(content).length === 0) {
-			return { content, images: [] };
-		}
-		return await prepareLocalImages({
-			vaultRoot: this.getVaultRoot(),
-			markdownPath: file.path,
-			content
-		});
+		const pdf = scanPdfCropReferences(content).length ? await preparePdfCropImages({
+			vaultRoot:this.getVaultRoot(),markdownPath:file.path,content,
+			render:async (path,pageNumber,rect) => {
+				const pdfjs=await loadPdfJs();
+				const task=pdfjs.getDocument({data:new Uint8Array(await readFile(path)),isEvalSupported:false});
+				const document=await task.promise;
+				try {
+					const page=await document.getPage(pageNumber), viewport=page.getViewport({scale:2});
+					const region=rect ? viewport.convertToViewportRectangle(rect) : [0,0,viewport.width,viewport.height];
+					const left=Math.min(region[0],region[2]),top=Math.min(region[1],region[3]);
+					const width=Math.ceil(Math.abs(region[2]-region[0])),height=Math.ceil(Math.abs(region[3]-region[1]));
+					if(left<0 || top<0 || left+width>viewport.width+1 || top+height>viewport.height+1 || width<1 || height<1) throw new Error("PDF 裁剪区域超出页面边界");
+					const canvas=createEl("canvas");canvas.width=width;canvas.height=height;
+					await page.render({canvasContext:canvas.getContext("2d"),viewport,transform:[1,0,0,1,-left,-top],background:"rgb(255,255,255)"}).promise;
+					return Buffer.from(canvas.toDataURL("image/png").split(",")[1]!,"base64");
+				} finally { await document.destroy(); }
+			}
+		}) : {content,images:[]};
+		if (!scanLocalImageReferences(pdf.content).length) return pdf;
+		const local=await prepareLocalImages({vaultRoot:this.getVaultRoot(),markdownPath:file.path,content:pdf.content});
+		return {content:local.content,images:[...pdf.images,...local.images]};
 	}
 
 	private getVaultRoot(): string {
@@ -2719,6 +2734,12 @@ exec "${nodePath}" "${scriptPath}" "$@"
 		const previous = this.settings.nativeCalloutStates?.[canonical];
 		await syncNativeDocument(canonical, stripPreparedMarkdownTitle(prepared.content), {
 			allowReplaceUntracked: creating || strategy !== "precise",
+			images:prepared.images,
+			uploadImage:async (blockId,image) => {
+				const result=await this.runLarkCli(["docs","+media-upload","--as","user","--doc-id",canonical,"--parent-type","docx_image","--parent-node",blockId,"--file",`./${basename(image.absolutePath)}`,"--json"],{cwd:dirname(image.absolutePath)});
+				if (!result.data?.file_token) throw new Error("图片上传未返回 file_token");
+				return result.data.file_token;
+			},
 			api: async (method, path, body, params) => {
 				return await this.withTempMarkdown("native-request", body === undefined ? "" : JSON.stringify(body), async file => {
 					const args = ["api", method, path, "--as", "user", "--json"];

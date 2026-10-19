@@ -269,3 +269,8 @@ function createPngHeader(width, height) {
 	buffer.writeUInt32BE(height, 20);
 	return buffer;
 }
+
+// Obsidian code examples must remain literal, including fences nested in Callouts.
+for (const source of ['`![[root.png]]`', '> ```md\n> ![[root.png]]\n> ```', '    ![[root.png]]']) {
+ assert.equal(scanLocalImageReferences(source).length, 0, source);
+}

@@ -1,7 +1,7 @@
 {
 	"id": "feishu-docs-publisher",
 	"name": "Feishu Research Publisher",
-	"version": "0.4.0",
+	"version": "0.4.1",
 	"minAppVersion": "1.13.0",
 	"description": "Publish research notes to Feishu with native foldable blocks and PDF citations.",
 	"author": "HeShiLie",

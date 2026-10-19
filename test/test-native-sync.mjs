@@ -1,5 +1,9 @@
 import assert from 'node:assert/strict';
 import esbuild from 'esbuild';
+import {mkdtemp,writeFile,rm} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
+import {createHash} from 'node:crypto';
 await esbuild.build({bundle:true,entryPoints:['src/native-sync.ts'],format:'esm',platform:'node',outfile:'test/.tmp-native-sync.mjs'});
 const {syncNativeDocument,nativeTreeHash}=await import('./.tmp-native-sync.mjs');
 const text=(id,value)=>({block_id:id,block_type:2,text:{elements:[{text_run:{content:value}}],style:{folded:false}}});
@@ -13,11 +17,14 @@ function server(){
    convertCount++;
    // The real Markdown conversion is covered by live API tests. This fixture tests transaction semantics.
    const parts=body.content.split(/\n\s*\n/).map(s=>s.trim()).filter(Boolean);
-   const out=parts.map((part,i)=>text('temp'+convertCount+'-'+i,part.replace(/\*\*/g,'')));
-   return {blocks:out,first_level_block_ids:out.map(b=>b.block_id)};
+   const imageUrls=[];
+   const out=parts.map((part,i)=>{const id='temp'+convertCount+'-'+i;const img=/^!\[\]\(([^)]+)\)$/.exec(part);if(img){imageUrls.push({block_id:id,image_url:img[1]});return {block_id:id,block_type:27,image:{}};}return text(id,part.replace(/\*\*/g,''));});
+   return {blocks:out,first_level_block_ids:out.map(b=>b.block_id),block_id_to_image_urls:imageUrls};
   }
   if(method==='GET'&&path.endsWith('/documents/doc'))return {document:{revision_id:revision}};
   if(method==='GET'&&path.endsWith('/blocks'))return {items:structuredClone([...blocks.values()]),has_more:false};
+  if(method==='GET'&&path.includes('/blocks/'))return {block:structuredClone(blocks.get(path.split('/').at(-1)))};
+  if(method==='PATCH'&&body.replace_image){const block=blocks.get(path.split('/').at(-1));block.image={...block.image,...body.replace_image};revision++;return {block:structuredClone(block)};}
   if(path.endsWith('/descendant')){
    if(tokens.has(params.client_token))return tokens.get(params.client_token);
    const ids=new Map(body.descendants.map(b=>[b.block_id,'remote'+(++serial)]));
@@ -95,3 +102,27 @@ const untracked=server();untracked.blocks.set('human',text('human','Keep'));untr
 await assert.rejects(()=>syncNativeDocument('doc',source,{...untracked.host,allowReplaceUntracked:false}),/安全精确模式/);
 assert.deepEqual(untracked.blocks.get('doc').children,['human']);
 console.log('Native media mapping and safe migration tests passed');
+
+const imageTest=server();
+const imageDir=await mkdtemp(join(tmpdir(),'native-image-test-'));
+try {
+ const bytes=Buffer.from('test bytes');const file=join(imageDir,'image.png');await writeFile(file,bytes);
+ const marker='FEISHU_LARK_LOCAL_IMAGE_'+'b'.repeat(64);
+ const image={placeholder:marker,absolutePath:file,contentHash:createHash('sha256').update(bytes).digest('hex'),displayWidth:320,displayHeight:160,sourceWidth:640,sourceHeight:320};
+ let uploads=0,failPatch=true;
+ const host={...imageTest.host,images:[image],uploadImage:async()=>{uploads++;return 'uploaded-image-token';},api:async(...args)=>{
+  if(failPatch&&args[0]==='PATCH'&&args[2]?.replace_image){failPatch=false;throw new Error('temporary patch failure');}
+  return imageTest.host.api(...args);
+ }};
+ const input='Before\n\n> [!note]- With image\n> '+marker+'\n\nAfter';
+ await assert.rejects(()=>syncNativeDocument('doc',input,host),/temporary patch failure/);
+ assert.equal(uploads,1);assert.equal(imageTest.state.pending.imageUploads[0].token,'uploaded-image-token');
+ const resumed=await syncNativeDocument('doc',input,host,imageTest.state);
+ assert.equal(uploads,1,'saved uploaded token must be reused on retry');
+ const parent=imageTest.blocks.get(resumed.units[1].id);
+ assert.equal(parent.children.length,1);
+ const picture=imageTest.blocks.get(parent.children[0]);assert.equal(picture.block_type,27);assert.equal(picture.image.token,'uploaded-image-token');assert.equal(picture.image.width,320);
+ await syncNativeDocument('doc',input,host,resumed);assert.equal(uploads,1);
+ assert.equal(imageTest.blocks.get('doc').children.length,3);
+} finally {await rm(imageDir,{recursive:true,force:true});}
+console.log('Nested native images and upload-token recovery tests passed');

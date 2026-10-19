@@ -1,3 +1,5 @@
+import { LocalImageResource } from "./local-image";
+import { readFile } from "fs/promises";
 import { createHash, randomUUID } from "crypto";
 import { assembleNativeCallouts, prepareNativeCallouts, ConvertedBlocks, NativeBlock } from "./native-callout";
 import { transformProse } from "./obsidian-export";
@@ -17,11 +19,14 @@ export interface NativeState {
 		units: NativeUnit[];
 		inserted?: boolean;
 		imageRoots?: Array<{ id: string; index: number }>;
+		imageUploads?: Array<{id:string;placeholder:string;token?:string;done?:boolean}>;
 	};
 }
 export interface NativeSyncHost {
 	api: NativeApi;
 	allowReplaceUntracked?: boolean;
+	images?: LocalImageResource[];
+	uploadImage?(blockId: string, image: LocalImageResource): Promise<string>;
 	save(state: NativeState): Promise<void>;
 	materialize?(): Promise<void>;
 }
@@ -68,7 +73,7 @@ export async function readNativeSnapshot(doc: string, api: NativeApi): Promise<{
 }
 
 /** Convert the standard Markdown once; restore file mentions before publishing. */
-export async function convertNativeDocument(markdown: string, api: NativeApi): Promise<ConvertedBlocks> {
+export async function convertNativeDocument(markdown: string, api: NativeApi, images: LocalImageResource[] = []): Promise<ConvertedBlocks> {
 	const draft = prepareNativeCallouts(markdown);
 	const mentions = new Map<string, { token: string; obj_type: number }>();
 	const prefix = `FDPCITE${hash(markdown).slice(0, 16)}X`;
@@ -79,14 +84,31 @@ export async function convertNativeDocument(markdown: string, api: NativeApi): P
 		mentions.set(marker, { token, obj_type: /file-type="file"/.test(attrs) ? 12 : 22 });
 		return marker;
 	}), false);
-	const data = await api("POST", "/open-apis/docx/v1/documents/blocks/convert", { content_type: "markdown", content: input });
+	const imageByMarker = new Map(images.map(image => [image.placeholder,image]));
+	const imageInput = transformProse(input, text => text.replace(/FEISHU_LARK_LOCAL_IMAGE_[a-f0-9]{64}/g, marker =>
+		imageByMarker.has(marker) ? `![](https://fdp-image.invalid/${marker})` : marker));
+	const data = await api("POST", "/open-apis/docx/v1/documents/blocks/convert", { content_type: "markdown", content: imageInput });
 	if (!Array.isArray(data.blocks) || !Array.isArray(data.first_level_block_ids)) throw new Error("Native conversion response incomplete");
-	if (data.block_id_to_image_urls?.length) throw new Error("原生折叠导出暂不支持网络图片：请先保存为本地图片；未写入文档。");
+	const imageBlocks = new Map<string, LocalImageResource>();
+	for (const entry of data.block_id_to_image_urls || []) {
+		const marker = /^https:\/\/fdp-image\.invalid\/(FEISHU_LARK_LOCAL_IMAGE_[a-f0-9]{64})$/.exec(entry.image_url)?.[1];
+		const image = marker ? imageByMarker.get(marker) : undefined;
+		if (!image) throw new Error("原生折叠导出暂不支持网络图片：请先保存为本地图片；未写入文档。");
+		imageBlocks.set(entry.block_id,image);
+	}
+	for (const marker of imageByMarker.keys()) {
+		if (imageInput.includes(`https://fdp-image.invalid/${marker}`) && ![...imageBlocks.values()].some(image => image.placeholder === marker)) throw new Error("转换器丢失图片位置，未写入文档。");
+	}
 	const tree = assembleNativeCallouts(data as ConvertedBlocks, draft.callouts);
 	const markerPattern = new RegExp(`${prefix}\\d+END`, "g");
 	const found = new Set<string>();
 	for (const block of tree.blocks) {
 		delete block.parent_id; delete block.comment_ids;
+		const image = imageBlocks.get(block.block_id);
+		if (image) {
+			if (block.block_type !== 27) throw new Error("图片未转换为独立原生图片块");
+			block.image = {token:image.placeholder,width:image.displayWidth || image.sourceWidth,height:image.displayHeight || image.sourceHeight,...(image.alt ? {caption:{content:image.alt}} : {})};
+		}
 		for (const value of Object.values(block)) {
 			if (!value || typeof value !== "object" || !("elements" in value)) continue;
 			const text = value as {elements: Array<Record<string, any>>};
@@ -140,10 +162,31 @@ export async function syncNativeDocument(doc: string, markdown: string, host: Na
 					unit.id = remote;
 				}
 			}
+			for (const image of pending.imageUploads || []) {
+				const remote = relations.get(image.id);
+				if (!remote) throw new Error("Missing native image block mapping");
+				image.id = remote;
+			}
 			pending.inserted = true;
 			await host.save(state);
 		}
-		if (host.materialize && !pending.imageRoots) {
+		for (const job of pending.imageUploads || []) {
+			if (job.done) continue;
+			const image = host.images?.find(image => image.placeholder === job.placeholder);
+			if (!image || !host.uploadImage) throw new Error("待上传图片资源不可用，请恢复对应源文件后重试。");
+			if (!job.token) {
+				const bytes = await readFile(image.absolutePath);
+				if (createHash("sha256").update(bytes).digest("hex") !== image.contentHash) throw new Error("图片在准备后发生变化，请重新准备后同步。");
+				job.token = await host.uploadImage(job.id,image);
+				if (!job.token) throw new Error("图片上传未返回 token");
+				await host.save(state);
+			}
+			await host.api("PATCH", `${base(doc)}/blocks/${job.id}`, {replace_image:{token:job.token,width:image.displayWidth || image.sourceWidth,height:image.displayHeight || image.sourceHeight}});
+			const remote = await host.api("GET", `${base(doc)}/blocks/${job.id}`);
+			if (remote.block?.image?.token !== job.token) throw new Error("原生图片 token 回读不一致");
+			job.done = true; await host.save(state);
+		}
+		if (!pending.imageUploads?.length && host.materialize && !pending.imageRoots) {
 			const beforeMedia = await readNativeSnapshot(doc, host.api);
 			pending.imageRoots = beforeMedia.roots.flatMap((id, index) => {
 				if (!pending.units.some(unit => unit.id === id)) return [];
@@ -154,7 +197,7 @@ export async function syncNativeDocument(doc: string, markdown: string, host: Na
 			});
 			await host.save(state);
 		}
-		await host.materialize?.();
+		if (!pending.imageUploads?.length) await host.materialize?.();
 		let snapshot = await readNativeSnapshot(doc, host.api);
 		for (const image of pending.imageRoots || []) {
 			const unit = pending.units.find(unit => unit.id === image.id);
@@ -194,7 +237,7 @@ export async function syncNativeDocument(doc: string, markdown: string, host: Na
 		if (state.sourceHash === hash(markdown)) { await updateTitle(snapshot); return state; }
 	}
 	if (!state.sourceHash && snapshot.roots.length && host.allowReplaceUntracked === false) throw new Error("安全精确模式下缺少原生折叠映射，请先使用自动同步完成首次迁移。");
-	const tree = await convertNativeDocument(markdown, host.api);
+	const tree = await convertNativeDocument(markdown, host.api, host.images);
 	const byId = new Map(tree.blocks.map(block => [block.block_id, block]));
 	const units = tree.first_level_block_ids.map(id => ({ id, hash: nativeTreeHash(id, byId), remoteHash: "" }));
 	let prefix = 0, suffix = 0;
@@ -222,9 +265,17 @@ export async function syncNativeDocument(doc: string, markdown: string, host: Na
 		if (block.children?.length && text?.style && values?.length) text.style.folded = values.shift();
 	}
 	if (requestBlocks.length > 1000) throw new Error("原生折叠单次变更超过 1000 块，未写入文档。");
+	const imageUploads = requestBlocks.flatMap(block => {
+		const marker = (block.image as {token?:string})?.token;
+		return block.block_type===27 && marker?.startsWith("FEISHU_LARK_LOCAL_IMAGE_") ? [{id:block.block_id,placeholder:marker}] : [];
+	});
+	const wireBlocks: NativeBlock[] = JSON.parse(JSON.stringify(requestBlocks));
+	for (const block of wireBlocks) {
+		if (imageUploads.some(image => image.id===block.block_id)) delete (block.image as Record<string,unknown>).token;
+	}
 	state.pending = {
-		sourceHash: hash(markdown), clientToken: randomUUID(),
-		request: { children_id: fresh.map(unit=>unit.id), descendants: requestBlocks, index: prefix },
+		sourceHash: hash(markdown), clientToken: randomUUID(), imageUploads,
+		request: { children_id: fresh.map(unit=>unit.id), descendants: wireBlocks, index: prefix },
 		remove: oldIds,
 		removeHashes: Object.fromEntries(oldIds.map(id => [id, nativeTreeHash(id, snapshot.blocks)])),
 		units: [...state.units.slice(0,prefix), ...fresh, ...(suffix ? state.units.slice(-suffix) : [])]

@@ -19,6 +19,7 @@ import {
 } from "./lark-cli-command.mjs";
 import {
 	extractTitle,
+	preparePdfCropImages,
 	prepareNativeCallouts,
 	syncNativeDocument,
 	stripPreparedMarkdownTitle,
@@ -313,7 +314,8 @@ async function syncMarkdownTask(task, settings, syncState) {
 		const file = { basename: basename(task.filePath, ".md") };
 		const normalizedContent = removeBindingOnlyFrontmatterBeforeNextFrontmatter(task.content);
 		const rawMarkdownForLark = prepareNoteContentForLark(file, removeLarkBinding(normalizedContent), settings.titleSource, (warning) => console.warn(`[Feishu export] ${task.repoRelativePath}: ${warning}`), true);
-		const markdownForLark = rewritePublishedPdfLinks(rawMarkdownForLark,
+		const pdfPrepared = await preparePdfCropImages({vaultRoot:task.vaultRoot,markdownPath:task.repoRelativePath,content:rawMarkdownForLark});
+		const markdownForLark = rewritePublishedPdfLinks(pdfPrepared.content,
 			buildPublishedPdfTargets(settings.pdfBindings, settings.disconnectedFolders),
 			{ path: task.repoRelativePath }, (target) => {
 				// Without Obsidian's metadata cache, accept only explicit vault/relative paths.
@@ -328,6 +330,7 @@ async function syncMarkdownTask(task, settings, syncState) {
 			markdownPath: task.repoRelativePath,
 			content: markdownForLark
 		});
+		preparedContent.images.push(...pdfPrepared.images);
 		const contentForLark = preparedContent.content;
 		if ((/\[![\w-]+/.test(contentForLark) && prepareNativeCallouts(contentForLark).callouts.length)
 			|| settings.nativeCalloutStates?.[task.canonicalToken]) {
@@ -335,6 +338,12 @@ async function syncMarkdownTask(task, settings, syncState) {
 			const canonical = remote.doc || remote.content.match(/<title\b[^>]*\bid="([A-Za-z0-9_-]+)"/)?.[1] || task.canonicalToken;
 			await syncNativeDocument(canonical, stripPreparedMarkdownTitle(contentForLark), {
 				allowReplaceUntracked: settings.syncStrategy !== "precise",
+				images:preparedContent.images,
+				uploadImage:async (blockId,image) => {
+					const result=await runLarkCli(settings,["docs","+media-upload","--as","user","--doc-id",canonical,"--parent-type","docx_image","--parent-node",blockId,"--file",`./${basename(image.absolutePath)}`,"--json"],dirname(image.absolutePath));
+					if (!result.data?.file_token) throw new Error("图片上传未返回 file_token");
+					return result.data.file_token;
+				},
 				api: async (method, path, body, params) => {
 					let result;
 					await withTempMarkdown("native-request", body === undefined ? "" : JSON.stringify(body), async file => {

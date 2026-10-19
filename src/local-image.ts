@@ -1,3 +1,4 @@
+import { transformProse } from "./obsidian-export";
 import { createHash } from "crypto";
 import { readdir, readFile, realpath } from "fs/promises";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "path";
@@ -65,10 +66,10 @@ export class LocalImageError extends Error {
 	}
 }
 
-export async function buildLocalImageFileIndex(vaultRoot: string): Promise<LocalImageFileIndex> {
+export async function buildLocalImageFileIndex(vaultRoot: string, includePdf = false): Promise<LocalImageFileIndex> {
 	const paths = new Set<string>();
 	const pathsByBasename = new Map<string, string[]>();
-	await collectImageFiles(vaultRoot, vaultRoot, paths, pathsByBasename);
+	await collectImageFiles(vaultRoot, vaultRoot, paths, pathsByBasename, includePdf);
 	return { paths, pathsByBasename };
 }
 
@@ -117,29 +118,15 @@ export async function prepareLocalImages(input: PrepareLocalImagesInput): Promis
 
 export function scanLocalImageReferences(content: string): LocalImageReference[] {
 	const references: LocalImageReference[] = [];
-	let offset = 0;
-	let fenceMarker = "";
-	while (offset <= content.length) {
-		const nextLineBreak = content.indexOf("\n", offset);
-		const rawLine = content.slice(offset, nextLineBreak < 0 ? content.length : nextLineBreak);
-		const line = rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine;
-		const fenceMatch = line.match(/^\s{0,3}(```+|~~~+)/);
-		if (fenceMatch?.[1]) {
-			const marker = fenceMatch[1].slice(0, 3);
-			if (!fenceMarker) {
-				fenceMarker = marker;
-			} else if (fenceMarker === marker) {
-				fenceMarker = "";
-			}
-		} else if (!fenceMarker) {
-			references.push(...scanLineImageReferences(line, offset));
+	transformProse(content, (prose, start) => {
+		let offset = start;
+		for (const line of prose.split("\n")) {
+			references.push(...scanLineImageReferences(line.replace(/\r$/, ""), offset));
+			offset += line.length + 1;
 		}
-		if (nextLineBreak < 0) {
-			break;
-		}
-		offset = nextLineBreak + 1;
-	}
-	return references.sort((left, right) => left.start - right.start);
+		return prose;
+	});
+	return references.sort((a,b) => a.start-b.start);
 }
 
 export async function findReferencingMarkdownFiles(input: FindReferencingMarkdownInput): Promise<string[]> {
@@ -181,6 +168,7 @@ function scanLineImageReferences(line: string, lineOffset: number): LocalImageRe
 	const wikiPattern = /!\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g;
 	let wikiMatch: RegExpExecArray | null;
 	while ((wikiMatch = wikiPattern.exec(line))) {
+		if (isEscapedImage(line, wikiMatch.index)) continue;
 		const sourceSyntax = wikiMatch[0] || "";
 		const target = (wikiMatch[1] || "").trim();
 		if (!target || !isSupportedImagePath(stripQueryAndFragment(target))) {
@@ -204,6 +192,7 @@ function scanLineImageReferences(line: string, lineOffset: number): LocalImageRe
 	const markdownPattern = /!\[([^\]]*)\]\((<[^>]+>|[^)\s]+)(?:\s+["'][^)]*["'])?\)/g;
 	let markdownMatch: RegExpExecArray | null;
 	while ((markdownMatch = markdownPattern.exec(line))) {
+		if (isEscapedImage(line, markdownMatch.index)) continue;
 		const relativeStart = markdownMatch.index;
 		const relativeEnd = relativeStart + (markdownMatch[0] || "").length;
 		if (occupiedRanges.some((range) => relativeStart < range.end && relativeEnd > range.start)) {
@@ -226,6 +215,11 @@ function scanLineImageReferences(line: string, lineOffset: number): LocalImageRe
 	return references;
 }
 
+function isEscapedImage(line: string, index: number): boolean {
+	let count=0; while(index>0 && line[--index]==="\\") count++;
+	return count%2===1;
+}
+
 function parseWikiImageAlias(alias: string): { width?: number; height?: number; alt?: string } {
 	const normalizedAlias = alias.trim();
 	const dimensions = normalizedAlias.match(/^(\d+)(?:x(\d+))?$/i);
@@ -238,7 +232,7 @@ function parseWikiImageAlias(alias: string): { width?: number; height?: number; 
 	};
 }
 
-function resolveLocalImageVaultPath(
+export function resolveLocalImageVaultPath(
 	target: string,
 	markdownPath: string,
 	imageIndex: LocalImageFileIndex
@@ -341,7 +335,7 @@ function calculateDisplayDimensions(
 	};
 }
 
-function replaceImageReferences(
+export function replaceImageReferences(
 	content: string,
 	references: LocalImageReference[],
 	images: LocalImageResource[]
@@ -361,8 +355,15 @@ function replaceImageReferences(
 		const suffix = content.slice(reference.end, lineEnd).trim();
 		const previousLineStart = lineStart > 0 ? content.lastIndexOf("\n", lineStart - 2) + 1 : 0;
 		const previousLine = lineStart > 0 ? content.slice(previousLineStart, lineStart - 1).trim() : "";
-		const separatorBefore = prefix ? "\n\n" : previousLine ? "\n" : "";
-		const separatorAfter = suffix ? "\n\n" : "";
+		const rawPrefix = content.slice(lineStart, reference.start);
+		const container = rawPrefix.match(/^([ \t]*(?:>[ \t]?)*)[ \t]*(?:([-+*]|\d+[.)])([ \t]+))?/);
+		const leading = container?.[0] || "";
+		const continuation = (container?.[1] || "") + (container?.[2] ? " ".repeat(container[2].length + (container[3]?.length || 1)) : leading.slice((container?.[1] || "").length));
+		const bodyPrefix = continuation.replace(/\t/g, "    ");
+		const separator = `\n${bodyPrefix.trimEnd()}\n${bodyPrefix}`;
+		const hasText = rawPrefix.slice(leading.length).trim().length > 0;
+		const separatorBefore = hasText ? separator : previousLine && !prefix ? "\n" : "";
+		const separatorAfter = suffix ? separator : "";
 		result += `${separatorBefore}${image.placeholder}${separatorAfter}`;
 		cursor = reference.end;
 	}
@@ -373,7 +374,8 @@ async function collectImageFiles(
 	vaultRoot: string,
 	directory: string,
 	paths: Set<string>,
-	pathsByBasename: Map<string, string[]>
+	pathsByBasename: Map<string, string[]>,
+	includePdf = false
 ): Promise<void> {
 	const entries = await readdir(directory, { withFileTypes: true });
 	for (const entry of entries) {
@@ -382,10 +384,10 @@ async function collectImageFiles(
 		}
 		const absolutePath = join(directory, entry.name);
 		if (entry.isDirectory()) {
-			await collectImageFiles(vaultRoot, absolutePath, paths, pathsByBasename);
+			await collectImageFiles(vaultRoot, absolutePath, paths, pathsByBasename, includePdf);
 			continue;
 		}
-		if (!entry.isFile() || !isSupportedImagePath(entry.name)) {
+		if (!entry.isFile() || !(isSupportedImagePath(entry.name) || (includePdf && /\.pdf$/i.test(entry.name)))) {
 			continue;
 		}
 		const vaultPath = normalizeVaultPath(relative(vaultRoot, absolutePath));

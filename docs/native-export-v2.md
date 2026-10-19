@@ -1,4 +1,4 @@
-# Feishu Research Publisher 0.4.0：主干＋原生折叠
+# Feishu Research Publisher 0.4.1：主干＋原生折叠
 
 本版将用户的论文笔记组织方式作为主要目标：主干正文保持原位，Callout 标题成为原生父文本块，正文、嵌套 Callout 和代码等成为它的真实子块。没有把 Callout 改写成章节标题，没有更改源 Markdown。
 
@@ -6,7 +6,7 @@
 
 关闭 Obsidian 中的原插件，备份原插件程序及数据。将 GitHub Release 的三个独立附件复制到 Vault 的 `.obsidian/plugins/feishu-docs-publisher/`，只替换 `main.js`、`manifest.json`、`styles.css`；保留 `data.json` 和 `lark-sync-state.json`。重新启用插件。
 
-ID 与上游相同，显示名为 Feishu Research Publisher，版本 0.4.0，GitHub 标记为预发布。此 fork 是原插件的替换版本，不能与上游同时启用；不是 Obsidian 社区目录中的独立条目。请从本 fork 下载更新。
+ID 与上游相同，显示名为 Feishu Research Publisher，版本 0.4.1，GitHub 标记为预发布。此 fork 是原插件的替换版本，不能与上游同时启用；不是 Obsidian 社区目录中的独立条目。请从本 fork 下载更新。
 
 需要原有飞书授权，以及新增 `docx:document.block:convert` scope。缺少该权限时需按 CLI 提示补充授权。
 
@@ -17,7 +17,7 @@ ID 与上游相同，显示名为 Feishu Research Publisher，版本 0.4.0，Git
 3. 将 Callout 标题与正文重新组装成原生父子树；去掉全部内部标记。
 4. `-` 初始折叠、`+` 初始展开，无折叠符号的块初始展开；嵌套保留。
 5. 标题行设置原生背景色：note 蓝、tip 绿、warning 橙、caution 红、PDF 根据原颜色。没有使用外层高亮容器，因此不把代码移出所属块。此处是标题背景色，不是完整的 Obsidian 外框皮肤。
-6. 已绑定 PDF 继续是原生文件引用，保留别名和页码；未绑定 PDF 继续可读降级。PDF selection/rect 暂未转为精确跳转或裁剪图片。
+6. 已绑定 PDF 继续是原生文件引用，保留别名和页码；未绑定 PDF 继续可读降级。PDF selection 暂未转为精确跳转；`![[pdf#page=...&rect=...]]` 已转换为原生图片块。
 
 含 Callout 的笔记走新增原生链路；不含 Callout、且未用原生链路发布过的笔记保留原有 CLI 路径。单篇创建/更新、目录中的笔记发布和 Git hook 均已接入。登录、PDF 上传及图片上传复用原有实现。
 
@@ -48,10 +48,10 @@ ID 与上游相同，显示名为 Feishu Research Publisher，版本 0.4.0，Git
 ## 当前限制
 
 - 单次变化范围的原生子树超过 1000 块会在写入前停止；尚未拆分超大子树。
-- 网络图片在原生路径中会明确拒绝，需先保存为本地图片。图片复用原上传流程，新增了占位校验及顶层 ID 映射；当前整篇测试没有普通图片，尚未完成含图片 Callout 的真实端到端测试。
+- 网络图片在原生路径中会明确拒绝，需先保存为本地图片。图片复用原上传流程，新增了占位校验及顶层 ID 映射；已实测两处 PDF 裁剪图及一处 PNG 双链图片，图片上传和 token 绑定直接发生在所属父块内，不依赖文末搬移。
 - `- > [!note]` 同行列表标记等特殊布局尚未支持，会停止，不静默吞掉正文。普通多行/嵌套引用 Callout 已覆盖。
 - Mermaid、复杂表格、脚注和 HTML 的原生转换能力未在本篇笔记全面实测；不宣称全功能高保真。
-- PDF 裁剪嵌入仍为文件引用；未绑定的内部 WikiLink 尚未解析。
+- Obsidian 内的 PDF 裁剪使用内置 PDF.js；Git hook 需要 Poppler，旋转页面需在 Obsidian 内发布。未绑定的内部 WikiLink 尚未解析。
 
 ## 主要源码
 
@@ -61,3 +61,10 @@ ID 与上游相同，显示名为 Feishu Research Publisher，版本 0.4.0，Git
 - [Git hook 接入](../sync-pre-push.mjs)
 
 运行 `npm ci && npm run check` 验证并构建。原项目及许可证归属见 [README](../README.md)。本版本的能力和限制以本文件为准。
+
+
+## 0.4.1 图片修复验证
+
+科研笔记中的两处 PDF++ `rect` 嵌入已按原坐标渲染为 PNG，保留页码图注与指定宽度；本地检查了裁剪图内容。飞书回读确认两张图都属于原来的“架构设计”列表块，顺序与前后说明一致。额外的 PNG WikiLink 回归文档确认：320 像素宽的图片处于折叠父块内，位于前后解释段落之间。
+
+普通双链图片和 PDF 区域图片均先转换为有确定位置的原生图片块，再上传并绑定 token；待完成上传的 token 持久化，重试不会重复创建图片块。原始 Markdown/PDF 不修改，渲染图片缓存在系统临时目录。

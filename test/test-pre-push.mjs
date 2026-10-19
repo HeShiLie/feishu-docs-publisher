@@ -1001,7 +1001,7 @@ async function testPublishedPdfReferences(workspace) {
 	await resetWorkspaceFiles(workspace);
 	await mkdir(join(workspace, "papers"), { recursive: true });
 	await writeFile(join(workspace, "papers/report.pdf"), "%PDF-1.4\n%%EOF");
-	const source = boundMarkdown("https://example.feishu.cn/docx/doc-token", "[[papers/report.pdf]] and ![[papers/report.pdf#page=2]]");
+	const source = boundMarkdown("https://example.feishu.cn/docx/doc-token", "[[papers/report.pdf]] and [[papers/report.pdf#page=2]]");
 	await writeFile(join(workspace, "bound.md"), source);
 	await execFileAsync("git", ["add", "bound.md"], { cwd: workspace });
 	await writeSettings(workspace, { syncStrategy: "overwrite", language: "en",
