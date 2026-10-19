@@ -4,6 +4,26 @@
 
 本文件按 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 的结构维护，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [0.4.0] - 2026-10-19
+
+### Added
+
+- Native parent/child Callout export for research notes, with default fold states and colored title rows.
+- Resumable native subtree synchronization, idempotent creation, and remote-edit protection.
+- PDF citation labels, page numbers, and explicit unresolved-attachment fallback.
+- Automated parser, synchronization, media-mapping, and plugin-routing tests.
+
+### Changed
+
+- Research fork maintained by HeShiLie; original MIT attribution retained.
+- Source Markdown stays read-only, including binding and remote-deletion handling.
+
+### Known limitations
+
+- Pre-release: browser visual folding acceptance remains pending.
+- PDF crop images and exact selection navigation are not implemented.
+- Native export rejects network images and changes larger than 1000 blocks; local-image-in-Callout end-to-end coverage remains incomplete.
+
 ## [0.3.1] - 2026-10-18
 
 ### 变更

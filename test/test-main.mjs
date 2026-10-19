@@ -308,10 +308,10 @@ bindingWriterPlugin.getBinding = () => null;
 bindingWriterPlugin.app = {
 	vault: {
 		read: async () => "Body",
-		modify: async () => {}
+		modify: async () => { throw new Error("Source note must remain read-only"); }
 	},
 	fileManager: {
-		processFrontMatter: async (_file, update) => update(writtenFrontmatter)
+		processFrontMatter: async () => { throw new Error("Source frontmatter must remain read-only"); }
 	}
 };
 await bindingWriterPlugin.writeBinding({ path: "note.md" }, {
@@ -319,8 +319,9 @@ await bindingWriterPlugin.writeBinding({ path: "note.md" }, {
 	url: "https://example.com/wiki/wiki-node"
 });
 assert.deepEqual(writtenFrontmatter, {
-	lark_doc_url: "https://example.com/wiki/wiki-node"
+	lark_doc_token: "legacy-token"
 });
+assert.equal(bindingWriterPlugin.settings.documentBindings["note.md"].token, "created-token");
 
 const aliasBootstrapPlugin = createPlugin();
 const reusableState = {
@@ -549,7 +550,8 @@ try {
 } finally {
 	console.warn = originalWarn;
 }
-assert.deepEqual(deletedRemoteFrontmatter, { tags: ["sync"] });
+assert.equal(deletedRemoteFrontmatter.lark_doc_token, deletedRemoteBinding.token);
+assert.equal(deletedRemotePlugin.settings.disconnectedBindings["docs/deleted-remote.md"], true);
 assert.equal(deletedRemotePlugin.syncState.documents["deleted-token"], undefined);
 assert.equal(deletedRemoteStateSaved, true);
 assert.equal(deletedRemoteWarnings.length, 1);
@@ -893,20 +895,20 @@ pdfReferencePlugin.withTempMarkdown = async (_name, content, callback) => {
 pdfReferencePlugin.runLarkCli = async () => ({ok:true,data:{document:{document_id:canonicalBinding.token,url:canonicalBinding.url}}});
 pdfReferencePlugin.saveCreatedDocumentStateFromBaseline = async (_binding, content) => { firstPdfBaseline = content; };
 await pdfReferencePlugin.syncFileInternal(fakeNote, publishOptions);
-assert.equal(firstPdfContent, `${pdfCite}\n\n${pdfCite}`, "first publish converts PDFs even outside a published folder");
-assert.equal(firstPdfBaseline, `# Note\n\n${pdfCite}\n\n${pdfCite}`, "sync baseline uses the uploaded references");
+assert.equal(firstPdfContent, `${pdfCite}\n\nScan.pdf · p.2 ${pdfCite}`, "first publish converts PDFs even outside a published folder");
+assert.equal(firstPdfBaseline, `# Note\n\n${pdfCite}\n\nScan.pdf · p.2 ${pdfCite}`, "sync baseline uses the uploaded references");
 let nextPdfContent;
 pdfReferencePlugin.updateLarkDocument = async (_doc, prepared) => { nextPdfContent = prepared.content; return {}; };
 await pdfReferencePlugin.syncFileInternal(fakeNote, { ...publishOptions, mode: "save", allowCreate: false });
 assert.equal(nextPdfContent, firstPdfBaseline, "save sync preserves file references");
 pdfReferencePlugin.settings.pdfBindings["Root/Scan.pdf"].status = "pending";
-assert.equal(pdfReferencePlugin.rewritePublishedPdfReferences(fakeNote, pdfSource), pdfSource);
+assert.match(pdfReferencePlugin.rewritePublishedPdfReferences(fakeNote, pdfSource), /Scan.pdf · p\.2（PDF 未发布或未绑定）/);
 pdfReferencePlugin.settings.pdfBindings["Root/Scan.pdf"].status = "published";
 pdfReferencePlugin.settings.disconnectedFolders.Root = true;
-assert.equal(pdfReferencePlugin.rewritePublishedPdfReferences(fakeNote, pdfSource), pdfSource);
+assert.match(pdfReferencePlugin.rewritePublishedPdfReferences(fakeNote, pdfSource), /Scan.pdf · p\.2（PDF 未发布或未绑定）/);
 delete pdfReferencePlugin.settings.disconnectedFolders.Root;
 pdfReferencePlugin.app.metadataCache.getFirstLinkpathDest = () => ({ path: "Unpublished/Scan.pdf" });
-assert.equal(pdfReferencePlugin.rewritePublishedPdfReferences(fakeNote, "[[Scan.pdf]]"), "[[Scan.pdf]]");
+assert.equal(pdfReferencePlugin.rewritePublishedPdfReferences(fakeNote, "[[Scan.pdf]]"), "Scan.pdf（PDF 未发布或未绑定）");
 
 const deletedPdfRoot = await mkdtemp(join(tmpdir(), "lark-deleted-pdf-test-"));
 try {
@@ -1356,3 +1358,24 @@ await upgradePlugin.installOrUpgradeLarkCli();
 assert.deepEqual(upgradeCommands, [["install", "-g", "@larksuite/cli@latest", "--no-audit", "--no-fund"]]);
 
 console.log("main plugin tests passed");
+
+// Native Callouts bypass Markdown upload on create and the legacy flat-block planner on update.
+const nativePlugin = createPublishingPlugin();
+const nativeSource = '# Note\n\nMain\n\n> [!note]- Details\n> Body\n\nTail';
+nativePlugin.readNoteForLark = async () => ({ content: nativeSource, images: [] });
+let nativeCalls = 0, nativeCreates = 0, initialNativeBody;
+nativePlugin.syncNativePreparedDocument = async (_doc, prepared) => { nativeCalls++; assert.equal(prepared.content, nativeSource); };
+nativePlugin.withTempMarkdown = async (_name, content, callback) => { initialNativeBody = content; return callback({directory:'/tmp',fileName:'native.md'}); };
+nativePlugin.runLarkCli = async args => {
+ assert.ok(args.includes('+create'));
+ nativeCreates++;
+ return {ok:true,data:{document:{document_id:canonicalBinding.token,url:canonicalBinding.url}}};
+};
+await nativePlugin.syncFileInternal(fakeNote, publishOptions);
+assert.equal(initialNativeBody, '');
+assert.equal(nativeCalls, 1);
+await nativePlugin.syncFileInternal(fakeNote, {...publishOptions,allowCreate:false,mode:'save'});
+assert.equal(nativeCalls, 2);
+assert.equal(nativeCreates, 1);
+assert.equal(nativePlugin.hasNativeCallouts('```md\n> [!note]- Example\n```'), false);
+console.log('Native Callout plugin routing tests passed');

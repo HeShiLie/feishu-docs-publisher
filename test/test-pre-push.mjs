@@ -1274,7 +1274,7 @@ async function testDeletedRemoteDocumentRemovesPersistedBinding(workspace, legac
 	assert.equal(settings.unrelatedSetting, "keep");
 	assert.equal(settings.updateFrontmatter, false);
 	assert.ok(settings.larkCliVersionCheck);
-	assert.equal(await readFile(join(workspace, "bound.md"), "utf8"), legacyFrontmatter ? "---\ntags: [sync]\n---\nBody" : "Body");
+	assert.equal(await readFile(join(workspace, "bound.md"), "utf8"), original);
 	assert.equal((await readSyncState(workspace)).documents["doc-token"], undefined);
 	await clearLog(workspace);
 	await runHook(workspace);
@@ -1323,8 +1323,9 @@ Body`);
 
 	assert.equal(result.exitCode, 1);
 	assert.match(result.stderr, /飞书文档远端已删除：bound\.md/);
-	assert.match(result.stderr, /已自动解绑，请提交变更后重新 push/);
+	assert.match(result.stderr, /已自动解绑，原始笔记未修改，请重新 push/);
 	assert.equal(await readFile(join(workspace, "bound.md"), "utf8"), `---
+lark_doc_url: https://example.feishu.cn/docx/doc-token
 tags:
   - sync
 ---

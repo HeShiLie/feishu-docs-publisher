@@ -18,6 +18,10 @@ import {
 	withDocsApiVersion
 } from "./lark-cli-command.mjs";
 import {
+	extractTitle,
+	prepareNativeCallouts,
+	syncNativeDocument,
+	stripPreparedMarkdownTitle,
 	buildSyncPlan,
 	buildPublishedPdfTargets,
 	rewritePublishedPdfLinks,
@@ -308,7 +312,7 @@ async function syncMarkdownTask(task, settings, syncState) {
 	try {
 		const file = { basename: basename(task.filePath, ".md") };
 		const normalizedContent = removeBindingOnlyFrontmatterBeforeNextFrontmatter(task.content);
-		const rawMarkdownForLark = prepareNoteContentForLark(file, removeLarkBinding(normalizedContent), settings.titleSource);
+		const rawMarkdownForLark = prepareNoteContentForLark(file, removeLarkBinding(normalizedContent), settings.titleSource, (warning) => console.warn(`[Feishu export] ${task.repoRelativePath}: ${warning}`), true);
 		const markdownForLark = rewritePublishedPdfLinks(rawMarkdownForLark,
 			buildPublishedPdfTargets(settings.pdfBindings, settings.disconnectedFolders),
 			{ path: task.repoRelativePath }, (target) => {
@@ -318,13 +322,38 @@ async function syncMarkdownTask(task, settings, syncState) {
 					if (path !== ".." && !path.startsWith("../") && existsSync(candidate)) return path;
 				}
 				return null;
-			});
+			}, (warning) => console.warn(`[Feishu export] ${task.repoRelativePath}: ${warning}`));
 		const preparedContent = await prepareLocalImages({
 			vaultRoot: task.vaultRoot,
 			markdownPath: task.repoRelativePath,
 			content: markdownForLark
 		});
 		const contentForLark = preparedContent.content;
+		if ((/\[![\w-]+/.test(contentForLark) && prepareNativeCallouts(contentForLark).callouts.length)
+			|| settings.nativeCalloutStates?.[task.canonicalToken]) {
+			const remote = await fetchLarkDocumentWithIds(settings, task.doc);
+			const canonical = remote.doc || remote.content.match(/<title\b[^>]*\bid="([A-Za-z0-9_-]+)"/)?.[1] || task.canonicalToken;
+			await syncNativeDocument(canonical, stripPreparedMarkdownTitle(contentForLark), {
+				allowReplaceUntracked: settings.syncStrategy !== "precise",
+				api: async (method, path, body, params) => {
+					let result;
+					await withTempMarkdown("native-request", body === undefined ? "" : JSON.stringify(body), async file => {
+						const args = ["api", method, path, "--as", "user", "--json"];
+						if (body !== undefined) args.push("--data", `@${file.fileName}`);
+						if (params) args.push("--params", JSON.stringify(params));
+						result = await runLarkCli(settings, args, file.directory);
+					});
+					if (!result?.ok || !result.data) throw new Error("原生块操作返回异常");
+					return result.data;
+				},
+				save: async state => {
+					(settings.nativeCalloutStates ??= {})[canonical] = state;
+					await writeSettingsUpdate(latest => ({ ...latest, nativeCalloutStates: { ...latest.nativeCalloutStates, [canonical]: state } }));
+				},
+				materialize: async () => { await materializeImagesForTask(settings, canonical, preparedContent.images); }
+			}, settings.nativeCalloutStates?.[canonical], extractTitle(file, contentForLark, "first-heading"));
+			return;
+		}
 		const strategy = settings.syncStrategy || "auto";
 		let state = findDocumentState(syncState, task.stateKeys, task.canonicalToken);
 		let syncDoc = state?.doc || task.doc;
@@ -401,15 +430,13 @@ async function syncMarkdownTask(task, settings, syncState) {
 async function unbindDeletedRemoteDocument(task, syncState) {
 	await writeSettingsUpdate((latestSettings) => {
 		const binding = readPersistedBinding(latestSettings, task.repoRelativePath);
-		if (!binding || binding.token !== task.binding.token || binding.url !== task.binding.url) {
+		if (binding && (binding.token !== task.binding.token || binding.url !== task.binding.url)) {
 			return latestSettings;
 		}
 		const documentBindings = { ...latestSettings.documentBindings };
 		delete documentBindings[task.repoRelativePath];
-		return { ...latestSettings, documentBindings };
+		return { ...latestSettings, documentBindings, disconnectedBindings: { ...latestSettings.disconnectedBindings, [task.repoRelativePath]: true } };
 	});
-	const unboundContent = removeLarkBindingFrontmatter(task.content);
-	await writeFile(task.filePath, unboundContent, "utf8");
 	for (const key of getDocumentStateKeys(task.stateKeys)) {
 		deleteDocumentSyncStateKey(syncState, key);
 	}
@@ -417,10 +444,10 @@ async function unbindDeletedRemoteDocument(task, syncState) {
 
 function formatDeletedRemoteUnboundMessage(settings, path) {
 	if (readLanguage(settings) === "en") {
-		return `[Feishu Docs Publisher] remote Feishu/Lark document was deleted: ${path}\nBinding was removed automatically. Commit the change and push again.`;
+		return `[Feishu Docs Publisher] remote Feishu/Lark document was deleted: ${path}\nBinding was removed automatically. Source note was preserved; push again.`;
 	}
 
-	return `[Feishu Docs Publisher] 飞书文档远端已删除：${path}\n已自动解绑，请提交变更后重新 push。`;
+	return `[Feishu Docs Publisher] 飞书文档远端已删除：${path}\n已自动解绑，原始笔记未修改，请重新 push。`;
 }
 
 function shouldRetryPlanWithRefreshedState(plan) {

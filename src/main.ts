@@ -1,3 +1,5 @@
+import { prepareNativeCallouts } from "./native-callout";
+import { NativeState, syncNativeDocument } from "./native-sync";
 import {
 	addIcon,
 	App,
@@ -216,6 +218,7 @@ type RemoteParentKind = "wiki" | "drive" | "my_library" | "unknown";
 type LarkCliAuthorizationKind = "login" | "app-configuration";
 
 interface LarkCliSyncSettings {
+	nativeCalloutStates?: Record<string, NativeState>;
 	language: Language;
 	larkCliPath: string;
 	larkCliVersionCheck?: LarkCliVersionCheck;
@@ -2592,7 +2595,9 @@ exec "${nodePath}" "${scriptPath}" "$@"
 		const rawContent = await this.app.vault.read(file);
 		const normalizedContent = removeBindingOnlyFrontmatterBeforeNextFrontmatter(rawContent);
 		const contentWithoutBinding = removeLarkBinding(normalizedContent);
-		const content = prepareNoteContentForLark(file, contentWithoutBinding, this.settings.titleSource);
+		const warnings: string[] = [];
+		const content = prepareNoteContentForLark(file, contentWithoutBinding, this.settings.titleSource, (warning) => warnings.push(warning), true);
+		this.reportExportWarnings(file, warnings);
 		if (scanLocalImageReferences(content).length === 0) {
 			return { content, images: [] };
 		}
@@ -2651,7 +2656,8 @@ exec "${nodePath}" "${scriptPath}" "$@"
 			preparedContent.content,
 			this.getStagedPublishOptions()
 		);
-		const initialBodyContent = publishPlan.staged ? "" : bodyContent;
+		const native = this.hasNativeCallouts(preparedContent.content);
+		const initialBodyContent = native || publishPlan.staged ? "" : bodyContent;
 		return await this.withTempMarkdown(file.basename, initialBodyContent, async (tempFile) => {
 			const args = ["docs", "+create", "--api-version", "v2", "--as", "user", "--doc-format", "markdown",
 				"--title", title, "--content", `@${tempFile.fileName}`, "--json"];
@@ -2690,12 +2696,47 @@ exec "${nodePath}" "${scriptPath}" "$@"
 				binding, file.parent?.name || "", this.parentPath(file.path), remoteParent
 			));
 			await onCreated?.(binding);
+			if (native) {
+				await this.syncNativePreparedDocument(token, preparedContent, true);
+				return binding;
+			}
 			if (publishPlan.staged) {
 				await this.appendStagedDocumentBatches(token || url, publishPlan.batches);
 			}
 			await this.materializeLocalImages(token, preparedContent.images);
 			return binding;
 		});
+	}
+
+	private hasNativeCallouts(content: string): boolean {
+		return /\[![\w-]+/.test(content) && prepareNativeCallouts(content).callouts.length > 0;
+	}
+
+	private async syncNativePreparedDocument(doc: string, prepared: PreparedNoteContent, creating = false, strategy = this.settings.syncStrategy): Promise<void> {
+		const fetched = await this.fetchLarkDocumentWithIds(doc);
+		const canonical = fetched.doc || fetched.content.match(/<title\b[^>]*\bid="([A-Za-z0-9_-]+)"/)?.[1] || extractDocumentToken(doc);
+		if (!canonical) throw new Error("无法解析原生折叠文档 ID");
+		const previous = this.settings.nativeCalloutStates?.[canonical];
+		await syncNativeDocument(canonical, stripPreparedMarkdownTitle(prepared.content), {
+			allowReplaceUntracked: creating || strategy !== "precise",
+			api: async (method, path, body, params) => {
+				return await this.withTempMarkdown("native-request", body === undefined ? "" : JSON.stringify(body), async file => {
+					const args = ["api", method, path, "--as", "user", "--json"];
+					if (body !== undefined) args.push("--data", `@${file.fileName}`);
+					if (params) args.push("--params", JSON.stringify(params));
+					const result = await this.runLarkCli(args, { cwd: file.directory });
+					if (!result.ok || !result.data) throw new Error("原生块操作返回异常");
+					return result.data;
+				});
+			},
+			save: async state => {
+				(this.settings.nativeCalloutStates ??= {})[canonical] = state;
+				const alias = extractDocumentToken(doc);
+				if (alias) this.settings.nativeCalloutStates[alias] = state;
+				await this.saveSettingsWithoutClearingCommandCache();
+			},
+			materialize: async () => { await this.materializeLocalImages(canonical, prepared.images); }
+		}, previous, extractTitle({ basename: "" }, prepared.content, "first-heading"));
 	}
 
 	private getStagedPublishOptions() {
@@ -2741,6 +2782,10 @@ exec "${nodePath}" "${scriptPath}" "$@"
 	): Promise<Partial<BoundLarkDocument>> {
 		const content = preparedContent.content;
 		const strategy = context.strategy || this.settings.syncStrategy;
+		if (this.hasNativeCallouts(content) || this.settings.nativeCalloutStates?.[extractDocumentToken(doc)]) {
+			await this.syncNativePreparedDocument(doc, preparedContent, false, strategy);
+			return {};
+		}
 		if (strategy !== "overwrite") {
 			const resumedDocument = await this.tryResumeStagedDocumentPublish(doc, preparedContent, context);
 			if (resumedDocument) {
@@ -3014,6 +3059,7 @@ exec "${nodePath}" "${scriptPath}" "$@"
 		binding: BoundLarkDocument,
 		baselineMarkdown?: string
 	): Promise<void> {
+		if (baselineMarkdown && this.hasNativeCallouts(baselineMarkdown)) return;
 		if (baselineMarkdown !== undefined) {
 			await this.saveSyncStateFromBaselineAndRemoteIds(binding, baselineMarkdown);
 			return;
@@ -3801,9 +3847,20 @@ exec "${nodePath}" "${scriptPath}" "$@"
 	private rewritePublishedPdfReferences(file: TFile, content: string): string {
 		const targets = buildPublishedPdfTargets(this.settings.pdfBindings, this.settings.disconnectedFolders);
 		const metadata = this.app.metadataCache;
-		return rewritePublishedPdfLinks(content, targets, file, metadata?.getFirstLinkpathDest
+		const warnings: string[] = [];
+		const result = rewritePublishedPdfLinks(content, targets, file, metadata?.getFirstLinkpathDest
 			? (target, source) => metadata.getFirstLinkpathDest(target, source)?.path ?? null
-			: undefined);
+			: undefined, (warning) => warnings.push(warning));
+		this.reportExportWarnings(file, warnings);
+		return result;
+	}
+
+	private reportExportWarnings(file: TFile, warnings: string[]): void {
+		if (!warnings.length) return;
+		console.warn(`[Feishu export] ${file.path}`, [...new Set(warnings)]);
+		if (warnings.some((warning) => warning.startsWith("PDF 未解析"))) {
+			new Notice(`${file.path}：有 PDF 尚未发布或绑定，已保留可读引用。详情见开发者控制台。`, 10000);
+		}
 	}
 
 	private rewritePublishedFolderInternalLinks(file: TFile, content: string): string {
@@ -5005,44 +5062,13 @@ exec "${nodePath}" "${scriptPath}" "$@"
 		}
 
 		await this.rememberDocumentBinding(file, binding);
-		if (!this.settings.updateFrontmatter) {
-			return;
-		}
-		this.selfWrittenPaths.set(file.path, Date.now());
-		const rawContent = await this.app.vault.read(file);
-		const normalizedContent = removeBindingOnlyFrontmatterBeforeNextFrontmatter(rawContent);
-		if (normalizedContent !== rawContent) {
-			await this.app.vault.modify(file, normalizedContent);
-			this.selfWrittenPaths.set(file.path, Date.now());
-		}
-
-		await this.app.fileManager.processFrontMatter(file, (frontmatter: Record<string, unknown>) => {
-			delete frontmatter.lark_doc;
-			delete frontmatter[FRONTMATTER_TOKEN_KEY];
-			delete frontmatter[FRONTMATTER_REMOTE_ROOT_KEY];
-			delete frontmatter[FRONTMATTER_REMOTE_PARENT_PATH_KEY];
-			delete frontmatter[LEGACY_FRONTMATTER_SYNCED_AT_KEY];
-			frontmatter[FRONTMATTER_URL_KEY] = binding.url;
-		});
-		this.selfWrittenPaths.set(file.path, Date.now());
+		// Customized exporter: bindings live in plugin data; source notes are read-only.
 	}
 
 	private async unbindDeletedRemoteDocument(file: TFile, binding: BoundLarkDocument): Promise<void> {
 		delete this.settings.documentBindings?.[file.path];
+		(this.settings.disconnectedBindings ??= {})[file.path] = true;
 		await this.saveSettingsWithoutClearingCommandCache();
-		this.selfWrittenPaths.set(file.path, Date.now());
-		const legacy = this.app.metadataCache?.getFileCache(file)?.frontmatter;
-		if (legacy?.[FRONTMATTER_URL_KEY] || legacy?.[FRONTMATTER_TOKEN_KEY]) {
-		await this.app.fileManager.processFrontMatter(file, (frontmatter: Record<string, unknown>) => {
-			delete frontmatter.lark_doc;
-			delete frontmatter[FRONTMATTER_URL_KEY];
-			delete frontmatter[FRONTMATTER_TOKEN_KEY];
-			delete frontmatter[LEGACY_FRONTMATTER_SYNCED_AT_KEY];
-			delete frontmatter[FRONTMATTER_REMOTE_ROOT_KEY];
-			delete frontmatter[FRONTMATTER_REMOTE_PARENT_PATH_KEY];
-		});
-		}
-		this.selfWrittenPaths.set(file.path, Date.now());
 		this.removeSyncStateForBinding(binding);
 		await this.saveLarkSyncState();
 	}
@@ -5599,15 +5625,6 @@ class LarkCliSyncSettingTab extends PluginSettingTab {
 								"file-name": t("titleSourceFileName")
 							},
 							defaultValue: DEFAULT_SETTINGS.titleSource
-						}
-					},
-					{
-						name: t("settingWriteBindingName"),
-						desc: t("settingWriteBindingDesc"),
-						control: {
-							type: "toggle",
-							key: "updateFrontmatter",
-							defaultValue: DEFAULT_SETTINGS.updateFrontmatter
 						}
 					},
 					{
