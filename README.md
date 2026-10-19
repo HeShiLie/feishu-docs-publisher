@@ -4,7 +4,7 @@
 
 A research-note export fork of [totok22/feishu-docs-publisher](https://github.com/totok22/feishu-docs-publisher), based on upstream 0.3.1. Publish notes to Feishu/Lark using the existing local `lark-cli` authentication and PDF publishing workflow.
 
-**0.4.1 is a pre-release.** Native block/API and automated tests pass, but browser visual acceptance of fold/unfold behavior is still pending. See the [compatibility report](docs/native-export-v2.md) before using it with existing documents.
+**0.4.2 is a pre-release.** Native block/API and automated tests pass, but browser visual acceptance of fold/unfold behavior is still pending. See the [compatibility report](docs/native-export-v2.md) before using it with existing documents.
 
 ## Features
 
@@ -20,7 +20,7 @@ A research-note export fork of [totok22/feishu-docs-publisher](https://github.co
 
 Requires desktop Obsidian **1.13.0+** and the upstream-supported `lark-cli` setup.
 
-1. Download **main.js**, **manifest.json**, and **styles.css** from [Release 0.4.1](https://github.com/HeShiLie/feishu-docs-publisher/releases/tag/0.4.1).
+1. Download **main.js**, **manifest.json**, and **styles.css** from [Release 0.4.2](https://github.com/HeShiLie/feishu-docs-publisher/releases/tag/0.4.2).
 2. Disable the existing plugin and back up its program files and data.
 3. Copy the three files into `<vault>/.obsidian/plugins/feishu-docs-publisher/`. Preserve `data.json` and `lark-sync-state.json` if replacing upstream.
 4. Restart Obsidian and enable **Feishu Research Publisher**.

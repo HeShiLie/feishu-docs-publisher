@@ -1,4 +1,4 @@
-# Feishu Research Publisher 0.4.1：主干＋原生折叠
+# Feishu Research Publisher 0.4.2：主干＋原生折叠
 
 本版将用户的论文笔记组织方式作为主要目标：主干正文保持原位，Callout 标题成为原生父文本块，正文、嵌套 Callout 和代码等成为它的真实子块。没有把 Callout 改写成章节标题，没有更改源 Markdown。
 
@@ -6,7 +6,7 @@
 
 关闭 Obsidian 中的原插件，备份原插件程序及数据。将 GitHub Release 的三个独立附件复制到 Vault 的 `.obsidian/plugins/feishu-docs-publisher/`，只替换 `main.js`、`manifest.json`、`styles.css`；保留 `data.json` 和 `lark-sync-state.json`。重新启用插件。
 
-ID 与上游相同，显示名为 Feishu Research Publisher，版本 0.4.1，GitHub 标记为预发布。此 fork 是原插件的替换版本，不能与上游同时启用；不是 Obsidian 社区目录中的独立条目。请从本 fork 下载更新。
+ID 与上游相同，显示名为 Feishu Research Publisher，版本 0.4.2，GitHub 标记为预发布。此 fork 是原插件的替换版本，不能与上游同时启用；不是 Obsidian 社区目录中的独立条目。请从本 fork 下载更新。
 
 需要原有飞书授权，以及新增 `docx:document.block:convert` scope。缺少该权限时需按 CLI 提示补充授权。
 
@@ -63,8 +63,12 @@ ID 与上游相同，显示名为 Feishu Research Publisher，版本 0.4.1，Git
 运行 `npm ci && npm run check` 验证并构建。原项目及许可证归属见 [README](../README.md)。本版本的能力和限制以本文件为准。
 
 
-## 0.4.1 图片修复验证
+## 0.4.2 图片修复验证
 
 科研笔记中的两处 PDF++ `rect` 嵌入已按原坐标渲染为 PNG，保留页码图注与指定宽度；本地检查了裁剪图内容。飞书回读确认两张图都属于原来的“架构设计”列表块，顺序与前后说明一致。额外的 PNG WikiLink 回归文档确认：320 像素宽的图片处于折叠父块内，位于前后解释段落之间。
 
 普通双链图片和 PDF 区域图片均先转换为有确定位置的原生图片块，再上传并绑定 token；待完成上传的 token 持久化，重试不会重复创建图片块。原始 Markdown/PDF 不修改，渲染图片缓存在系统临时目录。
+
+## 标签配色
+
+0.4.2 的原生导出会把紧邻中英文冒号之前的显式加粗标签设为亮黄色背景、红色文字，并保留加粗。冒号不额外着色，普通粗体和代码不改变；这是一项科研导出样式规则。

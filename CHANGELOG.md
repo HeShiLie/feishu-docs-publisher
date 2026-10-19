@@ -4,6 +4,12 @@
 
 本文件按 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 的结构维护，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [0.4.2] - 2026-10-19
+
+### Changed
+
+- Render explicit bold labels immediately before Chinese/English colons with bright yellow backgrounds and red text in native research exports. Preserve bold and other inline styles; leave code and unrelated bold text unchanged.
+
 ## [0.4.1] - 2026-10-19
 
 ### Fixed

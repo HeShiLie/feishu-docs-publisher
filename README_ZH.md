@@ -4,13 +4,13 @@
 
 基于 [totok22/feishu-docs-publisher](https://github.com/totok22/feishu-docs-publisher) 0.3.1 的科研笔记导出 fork。保留原插件的 CLI 登录、文档发布和 PDF 上传能力，重点适配“主干＋折叠细节”的阅读方式。
 
-**0.4.1 为预发布版**：自动化测试、原生 API 回读和局部更新实测通过；页面展开／收起的视觉验收尚未完成，不宣称完整复刻 Obsidian。
+**0.4.2 为预发布版**：自动化测试、原生 API 回读和局部更新实测通过；页面展开／收起的视觉验收尚未完成，不宣称完整复刻 Obsidian。
 
 ## 安装
 
 需要桌面版 Obsidian 1.13.0 或更高版本。
 
-1. 从 [0.4.1 Release](https://github.com/HeShiLie/feishu-docs-publisher/releases/tag/0.4.1) 下载三个独立附件：`main.js`、`manifest.json`、`styles.css`。
+1. 从 [0.4.2 Release](https://github.com/HeShiLie/feishu-docs-publisher/releases/tag/0.4.2) 下载三个独立附件：`main.js`、`manifest.json`、`styles.css`。
 2. 关闭原插件，备份其程序与数据。
 3. 将三个文件放入 `<Vault>/.obsidian/plugins/feishu-docs-publisher/`。只替换程序文件，保留原有 `data.json` 和 `lark-sync-state.json`。
 4. 重启 Obsidian，启用 **Feishu Research Publisher**。

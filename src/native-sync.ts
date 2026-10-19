@@ -1,3 +1,4 @@
+import { colorBoldColonLabels } from "./label-colors";
 import { LocalImageResource } from "./local-image";
 import { readFile } from "fs/promises";
 import { createHash, randomUUID } from "crypto";
@@ -8,6 +9,7 @@ export type NativeApi = (method: string, path: string, body?: unknown, params?: 
 export interface NativeUnit { id: string; hash: string; remoteHash: string; }
 export interface NativeState {
 	version: 1;
+	labelStyleVersion?: number;
 	sourceHash: string;
 	units: NativeUnit[];
 	pending?: {
@@ -130,6 +132,15 @@ export async function convertNativeDocument(markdown: string, api: NativeApi, im
 			});
 		}
 	}
+	for (const block of tree.blocks) {
+		if (block.block_type===14) continue;
+		for (const value of Object.values(block)) {
+			if (value && typeof value === "object" && "elements" in value) {
+				const text=value as {elements:Array<Record<string,any>>};
+				text.elements=colorBoldColonLabels(text.elements);
+			}
+		}
+	}
 	if (found.size !== mentions.size) throw new Error("Native converter lost PDF citations; refusing publication");
 	return tree;
 }
@@ -224,7 +235,7 @@ export async function syncNativeDocument(doc: string, markdown: string, host: Na
 		}
 		const expected = pending.units.map(unit => unit.id);
 		if (JSON.stringify(snapshot.roots) !== JSON.stringify(expected)) throw new Error("远端根块与本次同步计划不一致，事务已保留。");
-		state = { version: 1, sourceHash: pending.sourceHash, units: pending.units.map(unit => ({ ...unit, remoteHash: nativeTreeHash(unit.id, snapshot.blocks) })) };
+		state = { version: 1, labelStyleVersion: 1, sourceHash: pending.sourceHash, units: pending.units.map(unit => ({ ...unit, remoteHash: nativeTreeHash(unit.id, snapshot.blocks) })) };
 		await host.save(state);
 	}
 	if (state.pending) await finishPending();
@@ -234,7 +245,7 @@ export async function syncNativeDocument(doc: string, markdown: string, host: Na
 			|| state.units.some(unit => nativeTreeHash(unit.id, snapshot.blocks) !== unit.remoteHash)) {
 			throw new Error("飞书正文已被修改，请先合并远端改动后再同步；折叠状态变化不受此限制。");
 		}
-		if (state.sourceHash === hash(markdown)) { await updateTitle(snapshot); return state; }
+		if (state.sourceHash === hash(markdown) && state.labelStyleVersion===1) { await updateTitle(snapshot); return state; }
 	}
 	if (!state.sourceHash && snapshot.roots.length && host.allowReplaceUntracked === false) throw new Error("安全精确模式下缺少原生折叠映射，请先使用自动同步完成首次迁移。");
 	const tree = await convertNativeDocument(markdown, host.api, host.images);
